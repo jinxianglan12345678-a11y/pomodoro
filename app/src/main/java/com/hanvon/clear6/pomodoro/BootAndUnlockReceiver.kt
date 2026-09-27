@@ -21,6 +21,21 @@ class BootAndUnlockReceiver : BroadcastReceiver() {
                 } else {
                     context.startService(serviceIntent)
                 }
+                // 利用 AlarmManager.setAlarmClock 赋予 BroadcastReceiver 的系统级后台拉起特权 (ALLOW_BAL)
+                // 无需任何悬浮窗权限，直接在《微信读书》上方弹出全透明黑猫霸屏 Activity！
+                if (action == PomodoroForegroundService.ACTION_ALARM_PHASE_EXPIRED) {
+                    try {
+                        val catOverlayIntent = Intent(context, RestCatOverlayActivity::class.java).apply {
+                            addFlags(
+                                Intent.FLAG_ACTIVITY_NEW_TASK or
+                                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                                    Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                                    Intent.FLAG_ACTIVITY_NO_ANIMATION
+                            )
+                        }
+                        context.startActivity(catOverlayIntent)
+                    } catch (_: Exception) {}
+                }
             }
             Intent.ACTION_BOOT_COMPLETED,
             Intent.ACTION_LOCKED_BOOT_COMPLETED,

@@ -60,6 +60,7 @@ class PomodoroForegroundService : Service() {
         const val BROADCAST_UI_STATE = "com.hanvon.clear6.pomodoro.BROADCAST_UI_STATE"
         const val BROADCAST_EINK_FLASH = "com.hanvon.clear6.pomodoro.BROADCAST_EINK_FLASH"
         const val BROADCAST_EXIT_APP = "com.hanvon.clear6.pomodoro.BROADCAST_EXIT_APP"
+        const val BROADCAST_DISMISS_CAT_OVERLAY = "com.hanvon.clear6.pomodoro.BROADCAST_DISMISS_CAT_OVERLAY"
 
         const val EXTRA_PHASE = "extra_phase"
         const val EXTRA_RUN_STATE = "extra_run_state"
@@ -112,6 +113,7 @@ class PomodoroForegroundService : Service() {
     private var overlayCatView: RestingCatEInkView? = null
     private var overlayBgModeBtn: Button? = null
     private var isOverlayTransparentBg: Boolean = true
+    private var hasLaunchedTranslucentCatActivity: Boolean = false
 
     private val mainHandler = Handler(Looper.getMainLooper())
 
@@ -256,6 +258,7 @@ class PomodoroForegroundService : Service() {
             ACTION_STOP_AND_EXIT -> {
                 statsRepo.setUserExited(true)
                 cancelHardwarePhaseAlarm()
+                MinimalistSoundEngine.stopSilentKeepAliveAudio()
                 mainHandler.removeCallbacksAndMessages(null)
                 dismissKeepAliveBadge()
                 dismissRestCatOverlay()
@@ -263,6 +266,7 @@ class PomodoroForegroundService : Service() {
                 phaseEndEpochMs = 0L
                 currentRunState = RunState.STOPPED_ON_LOCK
                 persistActivePhaseState()
+                sendBroadcast(Intent(BROADCAST_DISMISS_CAT_OVERLAY).apply { setPackage(packageName) })
                 sendBroadcast(Intent(BROADCAST_EXIT_APP).apply { setPackage(packageName) })
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
                     stopForeground(STOP_FOREGROUND_REMOVE)
@@ -281,7 +285,10 @@ class PomodoroForegroundService : Service() {
                         restoreRunningStateIfKilled()
                     }
                     val now = System.currentTimeMillis()
-                    if (currentRunState == RunState.RUNNING && phaseEndEpochMs in 1..now) {
+                    if (intent.action == ACTION_ALARM_PHASE_EXPIRED && currentPhase == Phase.WORK) {
+                        // 硬件闹钟或透明黑猫窗口唤醒：无论后台之前是否被汉王冻结/强杀，立即切换到 REST 休息阶段！
+                        onPhaseCompletedNaturally()
+                    } else if (currentRunState == RunState.RUNNING && phaseEndEpochMs in 1..(now + 1500L)) {
                         onPhaseCompletedNaturally()
                     } else {
                         maybeRefreshEInkOutputs(force = true)
@@ -583,10 +590,21 @@ class PomodoroForegroundService : Service() {
     private fun triggerPhaseTransitionAlert(title: String, body: String, isWorkCompleted: Boolean) {
         val hasAudioSpeaker = checkAudioOutputAvailable()
 
+        val targetActivityClass = if (isWorkCompleted) {
+            RestCatOverlayActivity::class.java
+        } else {
+            MainActivity::class.java
+        }
+
         val contentIntent = PendingIntent.getActivity(
-            this, 0,
-            Intent(this, MainActivity::class.java).apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            this, if (isWorkCompleted) 3001 else 0,
+            Intent(this, targetActivityClass).apply {
+                addFlags(
+                    Intent.FLAG_ACTIVITY_NEW_TASK or
+                        Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                        Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                        Intent.FLAG_ACTIVITY_NO_ANIMATION
+                )
             },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
@@ -597,6 +615,7 @@ class PomodoroForegroundService : Service() {
             .setContentText(body)
             .setPriority(NotificationCompat.PRIORITY_MAX)
             .setCategory(NotificationCompat.CATEGORY_ALARM)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setAutoCancel(true)
             .setContentIntent(contentIntent)
 
@@ -760,6 +779,8 @@ class PomodoroForegroundService : Service() {
     }
 
     private fun acquireCpuPartialWakeLock() {
+        // 同步启动无声听书级音频保活通道，防止汉王系统在切去《微信读书》时清理后台
+        MinimalistSoundEngine.startSilentKeepAliveAudio()
         try {
             if (cpuPartialWakeLock == null) {
                 val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
@@ -777,6 +798,7 @@ class PomodoroForegroundService : Service() {
     }
 
     private fun releaseAllWakeLocks() {
+        MinimalistSoundEngine.stopSilentKeepAliveAudio()
         releaseScreenBrightWakeLock()
         try {
             if (cpuPartialWakeLock?.isHeld == true) {
@@ -811,40 +833,72 @@ class PomodoroForegroundService : Service() {
 
     /**
      * 硬件级系统闹钟兜底唤醒 (AlarmManager.setAlarmClock)：
-     * 即使汉王电纸书在后台看《微信读书》时强行清理了本应用进程，
-     * 安卓系统内核依然会在倒计时到点的那一秒准时唤醒本服务并弹出透明黑猫！
+     * - 当处于 WORK 工作阶段时，直接向系统 AlarmClock 注册 PendingIntent.getActivity(RestCatOverlayActivity)！
+     *   这是安卓 11 官方时钟闹钟特权通道 (mAllowBgActivityStartsOnSend = true)：
+     *   1) 完全不需要被汉王禁用的「悬浮窗权限 (SYSTEM_ALERT_WINDOW)」；
+     *   2) 哪怕本应用在后台被汉王系统 100% 强杀清理，到点那一秒安卓系统内核也会直接弹出透明黑猫 Activity 占领《微信读书》书页！
+     * - 当处于 REST 休息阶段时，注册 Broadcast 闹钟，5 分钟休息到点自动关闭黑猫回到《微信读书》。
      */
     private fun scheduleHardwarePhaseAlarm(triggerAtMillis: Long) {
         if (triggerAtMillis <= 0L) return
         try {
-            val alarmIntent = Intent(this, BootAndUnlockReceiver::class.java).apply {
+            cancelHardwarePhaseAlarm()
+            val catActivityIntent = Intent(this, RestCatOverlayActivity::class.java).apply {
+                action = ACTION_ALARM_PHASE_EXPIRED
+                addFlags(
+                    Intent.FLAG_ACTIVITY_NEW_TASK or
+                        Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                        Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                        Intent.FLAG_ACTIVITY_NO_ANIMATION
+                )
+            }
+            val pendingCatActivity = PendingIntent.getActivity(
+                this,
+                2005,
+                catActivityIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+
+            val alarmBroadcastIntent = Intent(this, BootAndUnlockReceiver::class.java).apply {
                 action = ACTION_ALARM_PHASE_EXPIRED
             }
-            val pendingAlarm = PendingIntent.getBroadcast(
+            val pendingBroadcast = PendingIntent.getBroadcast(
                 this,
                 2001,
-                alarmIntent,
+                alarmBroadcastIntent,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
-            val showIntent = PendingIntent.getActivity(
-                this,
-                2002,
-                Intent(this, MainActivity::class.java),
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-            )
+
+            val operationIntent = if (currentPhase == Phase.WORK) {
+                pendingCatActivity
+            } else {
+                pendingBroadcast
+            }
+
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
                 alarmManager.setAlarmClock(
-                    AlarmManager.AlarmClockInfo(triggerAtMillis, showIntent),
-                    pendingAlarm
+                    AlarmManager.AlarmClockInfo(triggerAtMillis, pendingCatActivity),
+                    operationIntent
                 )
             } else {
-                alarmManager.setExact(AlarmManager.RTC_WAKEUP, triggerAtMillis, pendingAlarm)
+                alarmManager.setExact(AlarmManager.RTC_WAKEUP, triggerAtMillis, operationIntent)
             }
         } catch (_: Exception) {}
     }
 
     private fun cancelHardwarePhaseAlarm() {
         try {
+            val catActivityIntent = Intent(this, RestCatOverlayActivity::class.java).apply {
+                action = ACTION_ALARM_PHASE_EXPIRED
+            }
+            val pendingCatActivity = PendingIntent.getActivity(
+                this,
+                2005,
+                catActivityIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            alarmManager.cancel(pendingCatActivity)
+
             val alarmIntent = Intent(this, BootAndUnlockReceiver::class.java).apply {
                 action = ACTION_ALARM_PHASE_EXPIRED
             }
@@ -953,23 +1007,32 @@ class PomodoroForegroundService : Service() {
         syncKeepAliveWorkBadge()
 
         if (currentPhase != Phase.REST || currentRunState == RunState.STOPPED_ON_LOCK) {
+            if (hasLaunchedTranslucentCatActivity) {
+                hasLaunchedTranslucentCatActivity = false
+                sendBroadcast(Intent(BROADCAST_DISMISS_CAT_OVERLAY).apply { setPackage(packageName) })
+            }
             dismissRestCatOverlay()
             return
         }
 
         val canOverlay = Build.VERSION.SDK_INT < Build.VERSION_CODES.M || Settings.canDrawOverlays(this)
         if (!canOverlay) {
-            // 若用户尚未开启悬浮窗权限，降级直接拉起番茄钟主界面霸屏
-            try {
-                val bringFrontIntent = Intent(this, MainActivity::class.java).apply {
-                    addFlags(
-                        Intent.FLAG_ACTIVITY_NEW_TASK or
-                            Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
-                            Intent.FLAG_ACTIVITY_SINGLE_TOP
-                    )
-                }
-                startActivity(bringFrontIntent)
-            } catch (_: Exception) {}
+            // 汉王 Clear 6 系统禁用了悬浮窗权限（提示“此功能会导致您手机的速度变慢”）：
+            // 直接拉起免悬浮窗权限的「100%全透明窗口 RestCatOverlayActivity」浮在《微信读书》书页正上方！
+            if (!hasLaunchedTranslucentCatActivity) {
+                hasLaunchedTranslucentCatActivity = true
+                try {
+                    val translucentCatIntent = Intent(this, RestCatOverlayActivity::class.java).apply {
+                        addFlags(
+                            Intent.FLAG_ACTIVITY_NEW_TASK or
+                                Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                                Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                                Intent.FLAG_ACTIVITY_NO_ANIMATION
+                        )
+                    }
+                    startActivity(translucentCatIntent)
+                } catch (_: Exception) {}
+            }
             return
         }
 

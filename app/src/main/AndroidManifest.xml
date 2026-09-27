@@ -4,6 +4,7 @@
 
     <!-- 核心权限声明：汉王 Clear6 及通用墨水屏电纸书 (Android 8.0 ~ 14) 专用 -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
@@ -12,9 +13,9 @@
     <!-- 硬件级精确闹钟唤醒权限：即使进程被汉王系统强杀，到点仍由系统内核准时唤醒弹出小猫 -->
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
-    <!-- 跨应用跳出霸屏与常驻防杀浮窗权限：在微信读书看书时保持前台可见窗口级优先级，休息时小猫直接跳上书页 -->
-    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <!-- 免悬浮窗权限全屏透明跳出权限（无需开启被汉王禁用的「显示在其他应用上层」） -->
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
     <!-- 严禁声明 INTERNET 权限，确保 100% 纯离线运行、不依赖谷歌服务 -->
 
@@ -36,10 +37,23 @@
             </intent-filter>
         </activity>
 
+        <!-- 免悬浮窗权限的 100% 全透明黑猫霸屏 Activity：独立 Task 栈直接浮在《微信读书》书页上方 -->
+        <activity
+            android:name=".RestCatOverlayActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:taskAffinity="com.hanvon.clear6.pomodoro.catoverlay"
+            android:excludeFromRecents="true"
+            android:showWhenLocked="true"
+            android:turnScreenOn="true"
+            android:screenOrientation="portrait"
+            android:theme="@style/Theme.Clear6Pomodoro.TranslucentOverlay" />
+
         <service
             android:name=".PomodoroForegroundService"
             android:enabled="true"
             android:exported="false"
+            android:foregroundServiceType="mediaPlayback"
             android:stopWithTask="false" />
 
         <receiver

@@ -8,4 +8,18 @@
         <item name="android:windowAnimationStyle">@null</item>
         <item name="android:statusBarColor">#000000</item>
     </style>
+
+    <!-- 免悬浮窗权限的 100% 透明背景黑猫霸屏主题：直接透出底层正在阅读的《微信读书》书页 -->
+    <style name="Theme.Clear6Pomodoro.TranslucentOverlay" parent="Theme.AppCompat.Light.NoActionBar">
+        <item name="colorPrimary">#000000</item>
+        <item name="colorPrimaryDark">#000000</item>
+        <item name="colorAccent">#000000</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:colorBackgroundCacheHint">@null</item>
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowContentOverlay">@null</item>
+        <item name="android:windowAnimationStyle">@null</item>
+        <item name="android:backgroundDimEnabled">false</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+    </style>
 </resources>

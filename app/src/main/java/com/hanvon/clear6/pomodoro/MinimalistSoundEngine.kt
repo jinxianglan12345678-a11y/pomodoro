@@ -167,4 +167,58 @@ object MinimalistSoundEngine {
         Thread.sleep(sleepMs)
         track.release()
     }
+
+    // 针对汉王 Clear 6 禁用悬浮窗后的「无声听书级音频保活通道」：
+    // 采用 MODE_STATIC 硬件缓冲区无限循环播放全 0 数字静音，0% CPU 占用、绝对无声，
+    // 让汉王系统将本应用识别为「正在后台听书/放音乐」，切到《微信读书》永远不会被系统杀后台！
+    private var keepAliveSilentTrack: AudioTrack? = null
+
+    @Synchronized
+    fun startSilentKeepAliveAudio() {
+        try {
+            if (keepAliveSilentTrack?.playState == AudioTrack.PLAYSTATE_PLAYING) return
+            stopSilentKeepAliveAudio()
+            val rate = 8000
+            val silentSamples = ShortArray(rate) // 1秒全0数字静音
+            val minBuf = AudioTrack.getMinBufferSize(
+                rate,
+                AudioFormat.CHANNEL_OUT_MONO,
+                AudioFormat.ENCODING_PCM_16BIT
+            )
+            val track = AudioTrack.Builder()
+                .setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                        .build()
+                )
+                .setAudioFormat(
+                    AudioFormat.Builder()
+                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                        .setSampleRate(rate)
+                        .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                        .build()
+                )
+                .setBufferSizeInBytes((silentSamples.size * 2).coerceAtLeast(minBuf))
+                .setTransferMode(AudioTrack.MODE_STATIC)
+                .build()
+            track.write(silentSamples, 0, silentSamples.size)
+            track.setLoopPoints(0, silentSamples.size, -1)
+            track.play()
+            keepAliveSilentTrack = track
+        } catch (_: Exception) {}
+    }
+
+    @Synchronized
+    fun stopSilentKeepAliveAudio() {
+        try {
+            keepAliveSilentTrack?.let {
+                if (it.playState == AudioTrack.PLAYSTATE_PLAYING) {
+                    it.stop()
+                }
+                it.release()
+            }
+        } catch (_: Exception) {}
+        keepAliveSilentTrack = null
+    }
 }

@@ -152,22 +152,18 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setupControls() {
-        // 顶部「5秒测试霸屏」按钮：一键验证在微信读书看书时，5秒后透明黑猫直接跳到书页上方占领屏幕
+        // 顶部「5秒测试霸屏」按钮：完全免悬浮窗权限！直接启动5秒硬件闹钟 + 无声听书保活并切回微信读书
         btnTest5sOverlay.setOnClickListener {
-            if (!hasOverlayPermission()) {
-                requestOverlayPermission()
-                return@setOnClickListener
-            }
             sendServiceAction(PomodoroForegroundService.ACTION_START_5S_OVERLAY_TEST)
             Toast.makeText(
                 this,
-                "已开启5秒倒计时！现在请打开微信读书，5秒后黑猫将直接跳上书页！",
+                "已开启5秒测试（免悬浮窗权限）！现在请切到微信读书，5秒后透明黑猫将直接跳上书页！",
                 Toast.LENGTH_LONG
             ).show()
             moveTaskToBack(true)
         }
 
-        // 顶部「后台看书」按钮：自动开启防杀保活微窗 + 检查电池白名单，最小化去打开微信读书
+        // 顶部「后台看书」按钮：启用「无声听书级音频保活 + 硬件闹钟」，无需开启被汉王禁用的悬浮窗权限！
         btnMinimizeBg.setOnClickListener {
             if (currentLockRule == PomodoroForegroundService.LockRuleMode.ABORT_ON_LOCK) {
                 val intent = Intent(this, PomodoroForegroundService::class.java).apply {
@@ -179,16 +175,12 @@ class MainActivity : AppCompatActivity() {
                 }
                 startServiceCompat(intent)
             }
-            if (!hasOverlayPermission()) {
-                requestOverlayPermission()
-                return@setOnClickListener
-            }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                 val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
                 if (!pm.isIgnoringBatteryOptimizations(packageName)) {
                     Toast.makeText(
                         this,
-                        "请先在弹窗中点击「允许」忽略电池优化，防止汉王系统在后台看书时杀进程！",
+                        "请先在弹窗中点击「允许」忽略电池优化，配合内置无声听书保活防止汉王杀后台！",
                         Toast.LENGTH_LONG
                     ).show()
                     requestIgnoreBatteryOptimizations()
@@ -198,7 +190,7 @@ class MainActivity : AppCompatActivity() {
             sendServiceAction(PomodoroForegroundService.ACTION_START_OR_RESUME)
             Toast.makeText(
                 this,
-                "已挂载右上角「🐾防杀微标」并设好硬件闹钟！现在可打开微信读书，绝不掉线",
+                "已激活「无声听书级保活 + 硬件闹钟」！现在可打开微信读书，休息时黑猫将直接跳上书页",
                 Toast.LENGTH_LONG
             ).show()
             moveTaskToBack(true)
@@ -303,11 +295,12 @@ class MainActivity : AppCompatActivity() {
         }
 
         btnOverlayPermission.setOnClickListener {
-            if (hasOverlayPermission()) {
-                Toast.makeText(this, "跨应用悬浮窗霸屏权限已开启！休息时黑猫将直接跳到微信读书上方", Toast.LENGTH_SHORT).show()
-            } else {
-                requestOverlayPermission()
-            }
+            Toast.makeText(
+                this,
+                "已内置「免悬浮窗透明窗口 + 无声听书级保活」，无需开启被汉王禁用的悬浮窗权限！",
+                Toast.LENGTH_LONG
+            ).show()
+            requestIgnoreBatteryOptimizations()
         }
 
         btnBatteryWhitelist.setOnClickListener { requestIgnoreBatteryOptimizations() }
@@ -510,8 +503,11 @@ class MainActivity : AppCompatActivity() {
             val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
             val ignored = pm.isIgnoringBatteryOptimizations(packageName)
             btnBatteryWhitelist.text = if (ignored) "电池白名单:已开" else "1.电池白名单"
-            val overlayGranted = Settings.canDrawOverlays(this)
-            btnOverlayPermission.text = if (overlayGranted) "跨应用霸屏权限：已开启 (可在微信读书上方跳出黑猫)" else "★ 点此开启「跨应用跳出黑猫」悬浮窗权限（必开）"
+            btnOverlayPermission.text = if (ignored) {
+                "✓ 免悬浮窗透明霸屏 + 无声听书保活：已就绪"
+            } else {
+                "★ 点此开启「电池无限制白名单」（配合无声听书防杀）"
+            }
         }
     }
 
