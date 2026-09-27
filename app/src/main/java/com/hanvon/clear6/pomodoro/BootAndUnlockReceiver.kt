@@ -11,6 +11,17 @@ class BootAndUnlockReceiver : BroadcastReceiver() {
         // 若用户已主动点击「退出程序」，则解锁或重启时不自动拉起后台服务，彻底零耗电
         if (PomodoroStatsRepository(context).isUserExited()) return
         when (action) {
+            PomodoroForegroundService.ACTION_ALARM_PHASE_EXPIRED,
+            PomodoroForegroundService.ACTION_KEEPALIVE_RESTART -> {
+                val serviceIntent = Intent(context, PomodoroForegroundService::class.java).apply {
+                    this.action = action
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(serviceIntent)
+                } else {
+                    context.startService(serviceIntent)
+                }
+            }
             Intent.ACTION_BOOT_COMPLETED,
             Intent.ACTION_LOCKED_BOOT_COMPLETED,
             Intent.ACTION_MY_PACKAGE_REPLACED,

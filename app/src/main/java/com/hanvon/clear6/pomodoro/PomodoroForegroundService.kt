@@ -17,6 +17,7 @@ import android.view.WindowManager
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
+import android.widget.Toast
 import androidx.core.app.NotificationCompat
 
 class PomodoroForegroundService : Service() {
@@ -52,6 +53,8 @@ class PomodoroForegroundService : Service() {
         const val ACTION_REQUEST_UI_SYNC = "com.hanvon.clear6.pomodoro.ACTION_REQUEST_UI_SYNC"
         const val ACTION_STOP_AND_EXIT = "com.hanvon.clear6.pomodoro.ACTION_STOP_AND_EXIT"
         const val ACTION_START_5S_OVERLAY_TEST = "com.hanvon.clear6.pomodoro.ACTION_START_5S_OVERLAY_TEST"
+        const val ACTION_ALARM_PHASE_EXPIRED = "com.hanvon.clear6.pomodoro.ACTION_ALARM_PHASE_EXPIRED"
+        const val ACTION_KEEPALIVE_RESTART = "com.hanvon.clear6.pomodoro.ACTION_KEEPALIVE_RESTART"
 
         // UI 广播 Action
         const val BROADCAST_UI_STATE = "com.hanvon.clear6.pomodoro.BROADCAST_UI_STATE"
@@ -92,8 +95,17 @@ class PomodoroForegroundService : Service() {
     private lateinit var statsRepo: PomodoroStatsRepository
     private lateinit var notificationManager: NotificationManager
     private lateinit var windowManager: WindowManager
+    private lateinit var alarmManager: AlarmManager
     private var screenWakeLock: PowerManager.WakeLock? = null
     private var cpuPartialWakeLock: PowerManager.WakeLock? = null
+
+    // 绝对到期时间戳（毫秒）：防止系统冻结 CPU 导致读秒变慢，且进程被杀重启后可精准恢复剩余秒数
+    private var phaseEndEpochMs: Long = 0L
+
+    // 第一重防杀装甲：工作看书阶段常驻右上角「微胶囊/1px隐形保活浮窗」(TYPE_APPLICATION_OVERLAY)
+    // 让安卓 WindowManager 将本进程标记为 VISIBLE_APP（屏幕可见窗口进程），彻底阻止汉王切换微信读书时杀后台！
+    private var keepAliveBadgeView: TextView? = null
+    private var isKeepAliveBadgeStealth: Boolean = false
 
     // 跨应用全屏透明黑猫霸屏悬浮窗（在微信读书/掌阅看书时，休息阶段直接跳出趴在书页上）
     private var overlayRootLayout: LinearLayout? = null
@@ -113,8 +125,12 @@ class PomodoroForegroundService : Service() {
         override fun run() {
             if (currentRunState != RunState.RUNNING) return
 
-            if (remainingSeconds > 0) {
+            val now = System.currentTimeMillis()
+            if (phaseEndEpochMs > 0L) {
+                remainingSeconds = ((phaseEndEpochMs - now + 999L) / 1000L).toInt().coerceAtLeast(0)
+            } else if (remainingSeconds > 0) {
                 remainingSeconds--
+                phaseEndEpochMs = now + remainingSeconds * 1000L
             }
 
             if (remainingSeconds <= 0) {
@@ -169,6 +185,7 @@ class PomodoroForegroundService : Service() {
         statsRepo = PomodoroStatsRepository(this)
         notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
+        alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
 
         workDurationMinutes = statsRepo.getWorkMinutes()
         restDurationMinutes = statsRepo.getRestMinutes()
@@ -183,16 +200,69 @@ class PomodoroForegroundService : Service() {
         createNotificationChannels()
         registerScreenReceiver()
 
+        // 若服务是被汉王系统杀后台后由 START_STICKY 或 AlarmManager 自动拉起，立即从本地时间戳恢复状态
+        restoreRunningStateIfKilled()
+
         startForeground(NOTIFICATION_ID_TIMER, buildOngoingNotification())
     }
 
+    private fun restoreRunningStateIfKilled() {
+        if (statsRepo.isUserExited()) return
+        val savedState = statsRepo.getSavedRunState()
+        val savedPhase = statsRepo.getSavedPhase()
+        val savedEndMs = statsRepo.getPhaseEndEpochMs()
+        if (savedState == RunState.RUNNING && savedEndMs > 0L) {
+            currentPhase = savedPhase
+            currentRunState = RunState.RUNNING
+            phaseEndEpochMs = savedEndMs
+            val now = System.currentTimeMillis()
+            val remain = ((savedEndMs - now + 999L) / 1000L).toInt()
+            if (remain <= 0) {
+                remainingSeconds = 0
+                mainHandler.post { onPhaseCompletedNaturally() }
+            } else {
+                remainingSeconds = remain
+                lastEventMessage = "后台保活守护中（已同步精确倒计时）"
+                acquireScreenBrightWakeLock()
+                acquireCpuPartialWakeLock()
+                scheduleHardwarePhaseAlarm(phaseEndEpochMs)
+                mainHandler.removeCallbacks(tickRunnable)
+                mainHandler.postDelayed(tickRunnable, 1000L)
+            }
+        } else if (savedState == RunState.PAUSED) {
+            currentPhase = savedPhase
+            currentRunState = RunState.PAUSED
+            remainingSeconds = statsRepo.getPausedRemainingSec(workDurationSec)
+        }
+    }
+
+    private fun persistActivePhaseState() {
+        statsRepo.saveRuntimeState(
+            phase = currentPhase,
+            runState = currentRunState,
+            endEpochMs = phaseEndEpochMs,
+            pausedRemainingSec = remainingSeconds
+        )
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        when (intent?.action) {
+        if (intent == null) {
+            // 系统回收内存后 START_STICKY 自动重启服务
+            restoreRunningStateIfKilled()
+            maybeRefreshEInkOutputs(force = true)
+            return START_STICKY
+        }
+        when (intent.action) {
             ACTION_STOP_AND_EXIT -> {
                 statsRepo.setUserExited(true)
+                cancelHardwarePhaseAlarm()
                 mainHandler.removeCallbacksAndMessages(null)
+                dismissKeepAliveBadge()
                 dismissRestCatOverlay()
                 releaseAllWakeLocks()
+                phaseEndEpochMs = 0L
+                currentRunState = RunState.STOPPED_ON_LOCK
+                persistActivePhaseState()
                 sendBroadcast(Intent(BROADCAST_EXIT_APP).apply { setPackage(packageName) })
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
                     stopForeground(STOP_FOREGROUND_REMOVE)
@@ -204,6 +274,20 @@ class PomodoroForegroundService : Service() {
                 stopSelf()
                 return START_NOT_STICKY
             }
+            ACTION_ALARM_PHASE_EXPIRED,
+            ACTION_KEEPALIVE_RESTART -> {
+                if (!statsRepo.isUserExited()) {
+                    if (currentRunState != RunState.RUNNING) {
+                        restoreRunningStateIfKilled()
+                    }
+                    val now = System.currentTimeMillis()
+                    if (currentRunState == RunState.RUNNING && phaseEndEpochMs in 1..now) {
+                        onPhaseCompletedNaturally()
+                    } else {
+                        maybeRefreshEInkOutputs(force = true)
+                    }
+                }
+            }
             ACTION_START_5S_OVERLAY_TEST -> {
                 statsRepo.setUserExited(false)
                 mainHandler.removeCallbacks(tickRunnable)
@@ -212,9 +296,12 @@ class PomodoroForegroundService : Service() {
                 statsRepo.setLockRuleMode(lockRuleMode)
                 currentPhase = Phase.WORK
                 remainingSeconds = 5
+                phaseEndEpochMs = System.currentTimeMillis() + 5000L
                 currentRunState = RunState.RUNNING
                 lastDisplayedMinute = -1
                 lastEventMessage = "5秒跨应用霸屏测试进行中：5秒后小猫将直接跳到微信读书上方！"
+                persistActivePhaseState()
+                scheduleHardwarePhaseAlarm(phaseEndEpochMs)
                 acquireScreenBrightWakeLock()
                 acquireCpuPartialWakeLock()
                 maybeRefreshEInkOutputs(force = true)
@@ -314,10 +401,13 @@ class PomodoroForegroundService : Service() {
         dismissRestCatOverlay()
         currentPhase = Phase.WORK
         remainingSeconds = workDurationSec
+        phaseEndEpochMs = System.currentTimeMillis() + remainingSeconds * 1000L
         currentRunState = RunState.RUNNING
         lastEventMessage = reason
         lastDisplayedMinute = -1
 
+        persistActivePhaseState()
+        scheduleHardwarePhaseAlarm(phaseEndEpochMs)
         acquireScreenBrightWakeLock()
         acquireCpuPartialWakeLock()
         maybeRefreshEInkOutputs(force = true)
@@ -326,15 +416,19 @@ class PomodoroForegroundService : Service() {
 
     private fun abortAndDiscardOnScreenOff(reason: String) {
         mainHandler.removeCallbacks(tickRunnable)
+        cancelHardwarePhaseAlarm()
+        dismissKeepAliveBadge()
         dismissRestCatOverlay()
         releaseAllWakeLocks()
 
         currentPhase = Phase.WORK
         remainingSeconds = workDurationSec
+        phaseEndEpochMs = 0L
         currentRunState = RunState.STOPPED_ON_LOCK
         lastEventMessage = reason
         lastDisplayedMinute = -1
 
+        persistActivePhaseState()
         maybeRefreshEInkOutputs(force = true)
     }
 
@@ -344,8 +438,11 @@ class PomodoroForegroundService : Service() {
             currentPhase = Phase.WORK
             remainingSeconds = workDurationSec
         }
+        phaseEndEpochMs = System.currentTimeMillis() + remainingSeconds * 1000L
         currentRunState = RunState.RUNNING
-        lastEventMessage = if (currentPhase == Phase.WORK) "工作中（保持屏幕常亮）" else "休息中（保持屏幕常亮）"
+        lastEventMessage = if (currentPhase == Phase.WORK) "工作中（四重防杀保活运行中）" else "休息中（保持屏幕常亮）"
+        persistActivePhaseState()
+        scheduleHardwarePhaseAlarm(phaseEndEpochMs)
         acquireScreenBrightWakeLock()
         acquireCpuPartialWakeLock()
         maybeRefreshEInkOutputs(force = true)
@@ -356,8 +453,16 @@ class PomodoroForegroundService : Service() {
     private fun pauseTimer() {
         if (currentRunState != RunState.RUNNING) return
         mainHandler.removeCallbacks(tickRunnable)
+        cancelHardwarePhaseAlarm()
+        val now = System.currentTimeMillis()
+        if (phaseEndEpochMs > now) {
+            remainingSeconds = ((phaseEndEpochMs - now + 999L) / 1000L).toInt().coerceAtLeast(1)
+        }
+        phaseEndEpochMs = 0L
         currentRunState = RunState.PAUSED
         lastEventMessage = "已暂停（释放常亮锁）"
+        persistActivePhaseState()
+        dismissKeepAliveBadge()
         releaseAllWakeLocks()
         maybeRefreshEInkOutputs(force = true)
     }
@@ -367,9 +472,12 @@ class PomodoroForegroundService : Service() {
         dismissRestCatOverlay()
         currentPhase = Phase.WORK
         remainingSeconds = workDurationSec
+        phaseEndEpochMs = System.currentTimeMillis() + remainingSeconds * 1000L
         currentRunState = RunState.RUNNING
         lastEventMessage = reason
         lastDisplayedMinute = -1
+        persistActivePhaseState()
+        scheduleHardwarePhaseAlarm(phaseEndEpochMs)
         acquireScreenBrightWakeLock()
         acquireCpuPartialWakeLock()
         maybeRefreshEInkOutputs(force = true)
@@ -388,8 +496,11 @@ class PomodoroForegroundService : Service() {
             remainingSeconds = workDurationSec
             lastEventMessage = "已结束休息收起小猫 → 进入下一轮 ${workDurationMinutes} 分钟工作"
         }
+        phaseEndEpochMs = System.currentTimeMillis() + remainingSeconds * 1000L
         currentRunState = RunState.RUNNING
         lastDisplayedMinute = -1
+        persistActivePhaseState()
+        scheduleHardwarePhaseAlarm(phaseEndEpochMs)
         acquireScreenBrightWakeLock()
         acquireCpuPartialWakeLock()
         maybeRefreshEInkOutputs(force = true)
@@ -402,6 +513,7 @@ class PomodoroForegroundService : Service() {
             statsRepo.recordCompletedPomodoro()
             currentPhase = Phase.REST
             remainingSeconds = restDurationSec
+            phaseEndEpochMs = System.currentTimeMillis() + remainingSeconds * 1000L
             lastEventMessage = "已完成1个完整番茄！小猫已跳出霸屏休息 ${restDurationMinutes} 分钟"
             triggerPhaseTransitionAlert(
                 title = "工作 ${workDurationMinutes} 分钟结束 · 小猫霸屏休息 ${restDurationMinutes} 分钟",
@@ -412,6 +524,7 @@ class PomodoroForegroundService : Service() {
             dismissRestCatOverlay()
             currentPhase = Phase.WORK
             remainingSeconds = workDurationSec
+            phaseEndEpochMs = System.currentTimeMillis() + remainingSeconds * 1000L
             lastEventMessage = "${restDurationMinutes} 分钟休息结束！小猫已收起，自动进入下一轮 ${workDurationMinutes} 分钟工作"
             triggerPhaseTransitionAlert(
                 title = "休息 ${restDurationMinutes} 分钟结束 · 小猫让出书页",
@@ -421,6 +534,8 @@ class PomodoroForegroundService : Service() {
         }
         currentRunState = RunState.RUNNING
         lastDisplayedMinute = -1
+        persistActivePhaseState()
+        scheduleHardwarePhaseAlarm(phaseEndEpochMs)
         acquireScreenBrightWakeLock()
         acquireCpuPartialWakeLock()
         maybeRefreshEInkOutputs(force = true)
@@ -695,11 +810,148 @@ class PomodoroForegroundService : Service() {
     }
 
     /**
+     * 硬件级系统闹钟兜底唤醒 (AlarmManager.setAlarmClock)：
+     * 即使汉王电纸书在后台看《微信读书》时强行清理了本应用进程，
+     * 安卓系统内核依然会在倒计时到点的那一秒准时唤醒本服务并弹出透明黑猫！
+     */
+    private fun scheduleHardwarePhaseAlarm(triggerAtMillis: Long) {
+        if (triggerAtMillis <= 0L) return
+        try {
+            val alarmIntent = Intent(this, BootAndUnlockReceiver::class.java).apply {
+                action = ACTION_ALARM_PHASE_EXPIRED
+            }
+            val pendingAlarm = PendingIntent.getBroadcast(
+                this,
+                2001,
+                alarmIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            val showIntent = PendingIntent.getActivity(
+                this,
+                2002,
+                Intent(this, MainActivity::class.java),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                alarmManager.setAlarmClock(
+                    AlarmManager.AlarmClockInfo(triggerAtMillis, showIntent),
+                    pendingAlarm
+                )
+            } else {
+                alarmManager.setExact(AlarmManager.RTC_WAKEUP, triggerAtMillis, pendingAlarm)
+            }
+        } catch (_: Exception) {}
+    }
+
+    private fun cancelHardwarePhaseAlarm() {
+        try {
+            val alarmIntent = Intent(this, BootAndUnlockReceiver::class.java).apply {
+                action = ACTION_ALARM_PHASE_EXPIRED
+            }
+            val pendingAlarm = PendingIntent.getBroadcast(
+                this,
+                2001,
+                alarmIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            alarmManager.cancel(pendingAlarm)
+        } catch (_: Exception) {}
+    }
+
+    /**
+     * 第一重防杀装甲：在《微信读书》看书工作阶段，挂载右上角「防杀保活微胶囊 / 1px 隐形锚点」
+     * 只要应用在 WindowManager 拥有活动悬浮窗，安卓系统就会将其锁定为 VISIBLE_APP_ADJ（屏幕可见进程），
+     * 汉王系统的切后台自动杀进程机制绝对不会清理拥有可见悬浮窗的应用！
+     * 点击该微胶囊可在「🐾 15' 剩余分钟角标」与「1x1像素全透明隐形保活」之间自由切换。
+     */
+    private fun syncKeepAliveWorkBadge() {
+        val canOverlay = Build.VERSION.SDK_INT < Build.VERSION_CODES.M || Settings.canDrawOverlays(this)
+        if (!canOverlay || currentPhase != Phase.WORK || currentRunState != RunState.RUNNING) {
+            dismissKeepAliveBadge()
+            return
+        }
+
+        val m = (remainingSeconds + 59) / 60
+        val badgeText = if (isKeepAliveBadgeStealth) "" else "🐾${m}'"
+
+        val overlayType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+        } else {
+            @Suppress("DEPRECATION")
+            WindowManager.LayoutParams.TYPE_PHONE
+        }
+
+        if (keepAliveBadgeView == null) {
+            try {
+                val badge = TextView(this).apply {
+                    text = badgeText
+                    setTextColor(Color.BLACK)
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
+                    typeface = Typeface.DEFAULT_BOLD
+                    gravity = Gravity.CENTER
+                    background = createBorderedButtonBackground(Color.WHITE)
+                    setPadding(dpToPx(6), dpToPx(2), dpToPx(6), dpToPx(2))
+                    alpha = if (isKeepAliveBadgeStealth) 0.02f else 0.95f
+                    setOnClickListener {
+                        isKeepAliveBadgeStealth = !isKeepAliveBadgeStealth
+                        if (isKeepAliveBadgeStealth) {
+                            text = "·"
+                            setPadding(1, 1, 1, 1)
+                            background = null
+                            alpha = 0.02f
+                            Toast.makeText(
+                                this@PomodoroForegroundService,
+                                "已切换为「隐形防杀保活锚点」，后台看书绝不掉线",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        } else {
+                            text = "🐾${(remainingSeconds + 59) / 60}'"
+                            setPadding(dpToPx(6), dpToPx(2), dpToPx(6), dpToPx(2))
+                            background = createBorderedButtonBackground(Color.WHITE)
+                            alpha = 0.95f
+                        }
+                    }
+                }
+
+                val params = WindowManager.LayoutParams(
+                    WindowManager.LayoutParams.WRAP_CONTENT,
+                    WindowManager.LayoutParams.WRAP_CONTENT,
+                    overlayType,
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                        WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+                    PixelFormat.TRANSLUCENT
+                ).apply {
+                    gravity = Gravity.TOP or Gravity.END
+                    x = dpToPx(8)
+                    y = dpToPx(6)
+                }
+
+                windowManager.addView(badge, params)
+                keepAliveBadgeView = badge
+            } catch (_: Exception) {}
+        } else {
+            if (!isKeepAliveBadgeStealth) {
+                keepAliveBadgeView?.text = badgeText
+            }
+        }
+    }
+
+    private fun dismissKeepAliveBadge() {
+        val badge = keepAliveBadgeView ?: return
+        try {
+            windowManager.removeView(badge)
+        } catch (_: Exception) {}
+        keepAliveBadgeView = null
+    }
+
+    /**
      * 核心功能：当进入 REST 休息阶段时，直接通过 WindowManager (TYPE_APPLICATION_OVERLAY)
      * 在微信读书 / KOReader 等任意阅读软件上方弹出全屏透明背景大黑猫占领书页！
      * 休息 5 分钟结束自动移除悬浮层，无缝继续看书。
      */
     private fun syncRestCatOverlayState() {
+        syncKeepAliveWorkBadge()
+
         if (currentPhase != Phase.REST || currentRunState == RunState.STOPPED_ON_LOCK) {
             dismissRestCatOverlay()
             return
@@ -883,8 +1135,32 @@ class PomodoroForegroundService : Service() {
         }
     }
 
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        // 当用户在多任务列表切换微信读书或清理最近任务时，若未主动点「退出」，0.5秒内自动拉起保活
+        if (!statsRepo.isUserExited() && currentRunState == RunState.RUNNING) {
+            try {
+                val restartIntent = Intent(this, BootAndUnlockReceiver::class.java).apply {
+                    action = ACTION_KEEPALIVE_RESTART
+                }
+                val pending = PendingIntent.getBroadcast(
+                    this,
+                    2009,
+                    restartIntent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+                alarmManager.setExact(
+                    AlarmManager.RTC_WAKEUP,
+                    System.currentTimeMillis() + 500L,
+                    pending
+                )
+            } catch (_: Exception) {}
+        }
+        super.onTaskRemoved(rootIntent)
+    }
+
     override fun onDestroy() {
         mainHandler.removeCallbacks(tickRunnable)
+        dismissKeepAliveBadge()
         dismissRestCatOverlay()
         releaseAllWakeLocks()
         try {

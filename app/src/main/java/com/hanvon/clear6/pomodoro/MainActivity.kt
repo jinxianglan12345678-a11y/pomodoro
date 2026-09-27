@@ -167,7 +167,7 @@ class MainActivity : AppCompatActivity() {
             moveTaskToBack(true)
         }
 
-        // 顶部「后台看书」按钮：最小化回到汉王书架打开微信读书，休息时间一到透明黑猫自动跳上书页
+        // 顶部「后台看书」按钮：自动开启防杀保活微窗 + 检查电池白名单，最小化去打开微信读书
         btnMinimizeBg.setOnClickListener {
             if (currentLockRule == PomodoroForegroundService.LockRuleMode.ABORT_ON_LOCK) {
                 val intent = Intent(this, PomodoroForegroundService::class.java).apply {
@@ -183,9 +183,22 @@ class MainActivity : AppCompatActivity() {
                 requestOverlayPermission()
                 return@setOnClickListener
             }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+                if (!pm.isIgnoringBatteryOptimizations(packageName)) {
+                    Toast.makeText(
+                        this,
+                        "请先在弹窗中点击「允许」忽略电池优化，防止汉王系统在后台看书时杀进程！",
+                        Toast.LENGTH_LONG
+                    ).show()
+                    requestIgnoreBatteryOptimizations()
+                    return@setOnClickListener
+                }
+            }
+            sendServiceAction(PomodoroForegroundService.ACTION_START_OR_RESUME)
             Toast.makeText(
                 this,
-                "已切入后台计时！休息时间一到，透明黑猫将直接跳到微信读书书页上方",
+                "已挂载右上角「🐾防杀微标」并设好硬件闹钟！现在可打开微信读书，绝不掉线",
                 Toast.LENGTH_LONG
             ).show()
             moveTaskToBack(true)

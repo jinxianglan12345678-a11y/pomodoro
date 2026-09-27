@@ -4,11 +4,15 @@
 
     <!-- 核心权限声明：汉王 Clear6 及通用墨水屏电纸书 (Android 8.0 ~ 14) 专用 -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <!-- 跨应用跳出霸屏权限：支持在微信读书/KOReader看书时，休息时间一到小猫直接跳到书页上方霸屏 -->
+    <!-- 硬件级精确闹钟唤醒权限：即使进程被汉王系统强杀，到点仍由系统内核准时唤醒弹出小猫 -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
+    <!-- 跨应用跳出霸屏与常驻防杀浮窗权限：在微信读书看书时保持前台可见窗口级优先级，休息时小猫直接跳上书页 -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
 
@@ -35,7 +39,8 @@
         <service
             android:name=".PomodoroForegroundService"
             android:enabled="true"
-            android:exported="false" />
+            android:exported="false"
+            android:stopWithTask="false" />
 
         <receiver
             android:name=".BootAndUnlockReceiver"
@@ -47,6 +52,8 @@
                 <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
                 <action android:name="android.intent.action.USER_PRESENT" />
+                <action android:name="com.hanvon.clear6.pomodoro.ACTION_ALARM_PHASE_EXPIRED" />
+                <action android:name="com.hanvon.clear6.pomodoro.ACTION_KEEPALIVE_RESTART" />
             </intent-filter>
         </receiver>
 

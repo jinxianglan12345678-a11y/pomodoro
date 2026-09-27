@@ -22,6 +22,10 @@ class PomodoroStatsRepository(context: Context) {
         private const val KEY_MINUTE_TICK = "key_minute_tick"
         private const val KEY_LOCKSCREEN_NOTIF = "key_lockscreen_notif"
         private const val KEY_USER_EXITED = "key_user_exited"
+        private const val KEY_SAVED_PHASE = "key_saved_phase"
+        private const val KEY_SAVED_RUN_STATE = "key_saved_run_state"
+        private const val KEY_PHASE_END_EPOCH_MS = "key_phase_end_epoch_ms"
+        private const val KEY_PAUSED_REMAINING_SEC = "key_paused_remaining_sec"
     }
 
     private fun currentDateKey(): String {
@@ -132,5 +136,41 @@ class PomodoroStatsRepository(context: Context) {
 
     fun setUserExited(exited: Boolean) {
         prefs.edit().putBoolean(KEY_USER_EXITED, exited).apply()
+    }
+
+    fun saveRuntimeState(
+        phase: PomodoroForegroundService.Phase,
+        runState: PomodoroForegroundService.RunState,
+        endEpochMs: Long,
+        pausedRemainingSec: Int
+    ) {
+        prefs.edit()
+            .putString(KEY_SAVED_PHASE, phase.name)
+            .putString(KEY_SAVED_RUN_STATE, runState.name)
+            .putLong(KEY_PHASE_END_EPOCH_MS, endEpochMs)
+            .putInt(KEY_PAUSED_REMAINING_SEC, pausedRemainingSec)
+            .apply()
+    }
+
+    fun getSavedPhase(): PomodoroForegroundService.Phase {
+        val raw = prefs.getString(KEY_SAVED_PHASE, PomodoroForegroundService.Phase.WORK.name)
+            ?: PomodoroForegroundService.Phase.WORK.name
+        return runCatching { PomodoroForegroundService.Phase.valueOf(raw) }
+            .getOrDefault(PomodoroForegroundService.Phase.WORK)
+    }
+
+    fun getSavedRunState(): PomodoroForegroundService.RunState {
+        val raw = prefs.getString(KEY_SAVED_RUN_STATE, PomodoroForegroundService.RunState.STOPPED_ON_LOCK.name)
+            ?: PomodoroForegroundService.RunState.STOPPED_ON_LOCK.name
+        return runCatching { PomodoroForegroundService.RunState.valueOf(raw) }
+            .getOrDefault(PomodoroForegroundService.RunState.STOPPED_ON_LOCK)
+    }
+
+    fun getPhaseEndEpochMs(): Long {
+        return prefs.getLong(KEY_PHASE_END_EPOCH_MS, 0L)
+    }
+
+    fun getPausedRemainingSec(defaultSec: Int): Int {
+        return prefs.getInt(KEY_PAUSED_REMAINING_SEC, defaultSec).coerceAtLeast(1)
     }
 }
