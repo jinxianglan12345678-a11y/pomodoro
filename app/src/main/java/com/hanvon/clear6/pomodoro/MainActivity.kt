@@ -5,6 +5,7 @@ import android.graphics.Color
 import android.net.Uri
 import android.os.*
 import android.provider.Settings
+import android.view.View
 import android.view.WindowManager
 import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
@@ -12,6 +13,7 @@ import androidx.appcompat.app.AppCompatActivity
 class MainActivity : AppCompatActivity() {
 
     private lateinit var rootContainer: LinearLayout
+    private lateinit var layoutTopHeader: LinearLayout
     private lateinit var btnTest5sOverlay: Button
     private lateinit var btnMinimizeBg: Button
     private lateinit var btnExitApp: Button
@@ -22,41 +24,29 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvTimerDisplay: TextView
     private lateinit var tvTimerUnitHint: TextView
     private lateinit var tvStatusSubtitle: TextView
+    private lateinit var layoutBottomControls: LinearLayout
     private lateinit var btnStartPause: Button
-    private lateinit var btnSkipPhase: Button
     private lateinit var btnReset: Button
     private lateinit var btnToggleSettings: Button
     private lateinit var layoutSettingsDrawer: LinearLayout
 
-    // 时长自定义控件（默认折叠隐藏，点击「时长与设置」展开）
+    // 折叠设置抽屉内的控件（时长、秒数刷新切换、音效模式切换、电池白名单）
     private lateinit var btnCycleDurationPreset: Button
     private lateinit var btnWorkMinus: Button
     private lateinit var btnWorkPlus: Button
     private lateinit var btnRestMinus: Button
     private lateinit var btnRestPlus: Button
-
-    // 锁屏规则开关、锁屏通知提示开关与音效控件
-    private lateinit var btnToggleLockRule: Button
-    private lateinit var btnToggleLockscreenNotif: Button
-    private lateinit var btnCycleSoundPreset: Button
-    private lateinit var cbHighSpeedMode: CheckBox
-    private lateinit var cbMinuteTick: CheckBox
-    private lateinit var tvStatsSummary: TextView
-    private lateinit var btnOverlayPermission: Button
+    private lateinit var btnToggleSpeed: Button
+    private lateinit var btnCycleSound: Button
     private lateinit var btnBatteryWhitelist: Button
-    private lateinit var btnNotificationSettings: Button
-    private lateinit var btnAutoStartSettings: Button
+    private lateinit var tvStatsSummary: TextView
 
+    private val uiHandler = Handler(Looper.getMainLooper())
     private var isSettingsExpanded: Boolean = false
     private var lastBackPressTime: Long = 0L
     private var currentWorkMinutes: Int = 15
     private var currentRestMinutes: Int = 5
-    private var currentLockRule = PomodoroForegroundService.LockRuleMode.ABORT_ON_LOCK
-    private var currentLockscreenNotif: Boolean = true
-    private var currentSoundPreset = MinimalistSoundEngine.SoundPreset.CRISP_TICK
-    private val flashHandler = Handler(Looper.getMainLooper())
 
-    // 常用番茄钟预设组 (工作分钟 to 休息分钟)
     private val durationPresets = listOf(
         15 to 5,
         25 to 5,
@@ -73,23 +63,19 @@ class MainActivity : AppCompatActivity() {
                     val remainingSec = intent.getIntExtra(PomodoroForegroundService.EXTRA_REMAINING_SEC, 900)
                     val workMin = intent.getIntExtra(PomodoroForegroundService.EXTRA_WORK_MINUTES, 15)
                     val restMin = intent.getIntExtra(PomodoroForegroundService.EXTRA_REST_MINUTES, 5)
-                    val lockRuleName = intent.getStringExtra(PomodoroForegroundService.EXTRA_LOCK_RULE) ?: "ABORT_ON_LOCK"
-                    val highSpeed = intent.getBooleanExtra(PomodoroForegroundService.EXTRA_HIGH_SPEED, false)
-                    val presetName = intent.getStringExtra(PomodoroForegroundService.EXTRA_SOUND_PRESET) ?: "CRISP_TICK"
-                    val minuteTick = intent.getBooleanExtra(PomodoroForegroundService.EXTRA_MINUTE_TICK, false)
-                    val lockscreenNotif = intent.getBooleanExtra(PomodoroForegroundService.EXTRA_LOCKSCREEN_NOTIF, true)
+                    val highSpeed = intent.getBooleanExtra(PomodoroForegroundService.EXTRA_HIGH_SPEED_MODE, false)
+                    val soundName = intent.getStringExtra(PomodoroForegroundService.EXTRA_SOUND_PRESET_NAME) ?: "清脆嘀嗒"
                     val todayCount = intent.getIntExtra(PomodoroForegroundService.EXTRA_TODAY_POMODOROS, 0)
                     val totalCount = intent.getIntExtra(PomodoroForegroundService.EXTRA_TOTAL_POMODOROS, 0)
                     val eventMsg = intent.getStringExtra(PomodoroForegroundService.EXTRA_LAST_EVENT_MSG) ?: ""
 
                     renderEInkState(
                         phase, runState, remainingSec, workMin, restMin,
-                        lockRuleName, highSpeed, presetName, minuteTick,
-                        lockscreenNotif, todayCount, totalCount, eventMsg
+                        highSpeed, soundName, todayCount, totalCount, eventMsg
                     )
                 }
                 PomodoroForegroundService.BROADCAST_EINK_FLASH -> {
-                    triggerEInkScreenInvertFlash()
+                    triggerScreenInvertFlash()
                 }
                 PomodoroForegroundService.BROADCAST_EXIT_APP -> {
                     window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -117,6 +103,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun bindViews() {
         rootContainer = findViewById(R.id.rootContainer)
+        layoutTopHeader = findViewById(R.id.layoutTopHeader)
         btnTest5sOverlay = findViewById(R.id.btnTest5sOverlay)
         btnMinimizeBg = findViewById(R.id.btnMinimizeBg)
         btnExitApp = findViewById(R.id.btnExitApp)
@@ -127,8 +114,8 @@ class MainActivity : AppCompatActivity() {
         tvTimerDisplay = findViewById(R.id.tvTimerDisplay)
         tvTimerUnitHint = findViewById(R.id.tvTimerUnitHint)
         tvStatusSubtitle = findViewById(R.id.tvStatusSubtitle)
+        layoutBottomControls = findViewById(R.id.layoutBottomControls)
         btnStartPause = findViewById(R.id.btnStartPause)
-        btnSkipPhase = findViewById(R.id.btnSkipPhase)
         btnReset = findViewById(R.id.btnReset)
         btnToggleSettings = findViewById(R.id.btnToggleSettings)
         layoutSettingsDrawer = findViewById(R.id.layoutSettingsDrawer)
@@ -138,65 +125,35 @@ class MainActivity : AppCompatActivity() {
         btnWorkPlus = findViewById(R.id.btnWorkPlus)
         btnRestMinus = findViewById(R.id.btnRestMinus)
         btnRestPlus = findViewById(R.id.btnRestPlus)
-
-        btnToggleLockRule = findViewById(R.id.btnToggleLockRule)
-        btnToggleLockscreenNotif = findViewById(R.id.btnToggleLockscreenNotif)
-        btnCycleSoundPreset = findViewById(R.id.btnCycleSoundPreset)
-        cbHighSpeedMode = findViewById(R.id.cbHighSpeedMode)
-        cbMinuteTick = findViewById(R.id.cbMinuteTick)
-        tvStatsSummary = findViewById(R.id.tvStatsSummary)
-        btnOverlayPermission = findViewById(R.id.btnOverlayPermission)
+        btnToggleSpeed = findViewById(R.id.btnToggleSpeed)
+        btnCycleSound = findViewById(R.id.btnCycleSound)
         btnBatteryWhitelist = findViewById(R.id.btnBatteryWhitelist)
-        btnNotificationSettings = findViewById(R.id.btnNotificationSettings)
-        btnAutoStartSettings = findViewById(R.id.btnAutoStartSettings)
+        tvStatsSummary = findViewById(R.id.tvStatsSummary)
     }
 
     private fun setupControls() {
-        // 顶部「5秒测试霸屏」按钮：完全免悬浮窗权限！直接启动5秒硬件闹钟 + 无声听书保活并切回微信读书
         btnTest5sOverlay.setOnClickListener {
             sendServiceAction(PomodoroForegroundService.ACTION_START_5S_OVERLAY_TEST)
             Toast.makeText(
                 this,
-                "已开启5秒测试（免悬浮窗权限）！现在请切到微信读书，5秒后透明黑猫将直接跳上书页！",
-                Toast.LENGTH_LONG
+                "已开启5秒测试！5秒后透明小猫跳出（待机锁屏即刻清零）",
+                Toast.LENGTH_SHORT
             ).show()
             moveTaskToBack(true)
         }
 
-        // 顶部「后台看书」按钮：启用「无声听书级音频保活 + 硬件闹钟」，无需开启被汉王禁用的悬浮窗权限！
         btnMinimizeBg.setOnClickListener {
-            if (currentLockRule == PomodoroForegroundService.LockRuleMode.ABORT_ON_LOCK) {
-                val intent = Intent(this, PomodoroForegroundService::class.java).apply {
-                    action = PomodoroForegroundService.ACTION_SET_LOCK_RULE
-                    putExtra(
-                        PomodoroForegroundService.EXTRA_LOCK_RULE,
-                        PomodoroForegroundService.LockRuleMode.CONTINUE_ON_LOCK.name
-                    )
-                }
-                startServiceCompat(intent)
-            }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                 val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
                 if (!pm.isIgnoringBatteryOptimizations(packageName)) {
-                    Toast.makeText(
-                        this,
-                        "请先在弹窗中点击「允许」忽略电池优化，配合内置无声听书保活防止汉王杀后台！",
-                        Toast.LENGTH_LONG
-                    ).show()
                     requestIgnoreBatteryOptimizations()
                     return@setOnClickListener
                 }
             }
             sendServiceAction(PomodoroForegroundService.ACTION_START_OR_RESUME)
-            Toast.makeText(
-                this,
-                "已激活「无声听书级保活 + 硬件闹钟」！现在可打开微信读书，休息时黑猫将直接跳上书页",
-                Toast.LENGTH_LONG
-            ).show()
             moveTaskToBack(true)
         }
 
-        // 顶部「退出」按钮：一键停止后台服务、释放常亮锁、清除通知栏并彻底关闭程序
         btnExitApp.setOnClickListener {
             exitAppCompletely()
         }
@@ -204,21 +161,16 @@ class MainActivity : AppCompatActivity() {
         btnStartPause.setOnClickListener {
             sendServiceAction(PomodoroForegroundService.ACTION_TOGGLE_PAUSE)
         }
-        btnSkipPhase.setOnClickListener {
-            sendServiceAction(PomodoroForegroundService.ACTION_SKIP_PHASE)
-        }
         btnReset.setOnClickListener {
             sendServiceAction(PomodoroForegroundService.ACTION_RESET)
         }
 
-        // 展开/收起「时长自定义与规则设置」面板，保持主屏极简干净
         btnToggleSettings.setOnClickListener {
             isSettingsExpanded = !isSettingsExpanded
-            layoutSettingsDrawer.visibility = if (isSettingsExpanded) android.view.View.VISIBLE else android.view.View.GONE
-            btnToggleSettings.text = if (isSettingsExpanded) "收起设置 ▲" else "时长与设置 ▼"
+            layoutSettingsDrawer.visibility = if (isSettingsExpanded) View.VISIBLE else View.GONE
+            btnToggleSettings.text = if (isSettingsExpanded) "收起设置 ▲" else "时长设置 ▼"
         }
 
-        // 1. 一键切换常用时长预设（15/5 -> 25/5 -> 30/5 -> 45/10）
         btnCycleDurationPreset.setOnClickListener {
             val currentIdx = durationPresets.indexOfFirst {
                 it.first == currentWorkMinutes && it.second == currentRestMinutes
@@ -227,7 +179,6 @@ class MainActivity : AppCompatActivity() {
             applyCustomDurations(nextPair.first, nextPair.second)
         }
 
-        // 工作与休息时长自由加减微调
         btnWorkMinus.setOnClickListener {
             val step = if (currentWorkMinutes > 10) 5 else 1
             applyCustomDurations((currentWorkMinutes - step).coerceAtLeast(1), currentRestMinutes)
@@ -243,80 +194,14 @@ class MainActivity : AppCompatActivity() {
             applyCustomDurations(currentWorkMinutes, (currentRestMinutes + 1).coerceAtMost(90))
         }
 
-        // 2. 切换锁屏规则开关（锁屏清零重开 vs 锁屏后台继续计时）
-        btnToggleLockRule.setOnClickListener {
-            val nextRule = if (currentLockRule == PomodoroForegroundService.LockRuleMode.ABORT_ON_LOCK) {
-                PomodoroForegroundService.LockRuleMode.CONTINUE_ON_LOCK
-            } else {
-                PomodoroForegroundService.LockRuleMode.ABORT_ON_LOCK
-            }
-            val intent = Intent(this, PomodoroForegroundService::class.java).apply {
-                action = PomodoroForegroundService.ACTION_SET_LOCK_RULE
-                putExtra(PomodoroForegroundService.EXTRA_LOCK_RULE, nextRule.name)
-            }
-            startServiceCompat(intent)
+        btnToggleSpeed.setOnClickListener {
+            sendServiceAction(PomodoroForegroundService.ACTION_TOGGLE_SPEED_MODE)
         }
-
-        // 2.5 切换「锁屏通知提示」开关（利用 Android Notification API VISIBILITY_PUBLIC 在锁屏界面显示剩余时长）
-        btnToggleLockscreenNotif.setOnClickListener {
-            val nextEnabled = !currentLockscreenNotif
-            val intent = Intent(this, PomodoroForegroundService::class.java).apply {
-                action = PomodoroForegroundService.ACTION_SET_LOCKSCREEN_NOTIF
-                putExtra(PomodoroForegroundService.EXTRA_LOCKSCREEN_NOTIF, nextEnabled)
-            }
-            startServiceCompat(intent)
-        }
-
-        // 3. 切换并试听极简短促音效
-        btnCycleSoundPreset.setOnClickListener {
-            val values = MinimalistSoundEngine.SoundPreset.values()
-            val nextPreset = values[(currentSoundPreset.ordinal + 1) % values.size]
-            val intent = Intent(this, PomodoroForegroundService::class.java).apply {
-                action = PomodoroForegroundService.ACTION_SET_SOUND_PRESET
-                putExtra(PomodoroForegroundService.EXTRA_SOUND_PRESET, nextPreset.name)
-            }
-            startServiceCompat(intent)
-        }
-
-        cbHighSpeedMode.setOnCheckedChangeListener { _, isChecked ->
-            val intent = Intent(this, PomodoroForegroundService::class.java).apply {
-                action = PomodoroForegroundService.ACTION_SET_HIGH_SPEED
-                putExtra(PomodoroForegroundService.EXTRA_HIGH_SPEED, isChecked)
-            }
-            startServiceCompat(intent)
-        }
-
-        cbMinuteTick.setOnCheckedChangeListener { _, isChecked ->
-            val intent = Intent(this, PomodoroForegroundService::class.java).apply {
-                action = PomodoroForegroundService.ACTION_SET_MINUTE_TICK
-                putExtra(PomodoroForegroundService.EXTRA_MINUTE_TICK, isChecked)
-            }
-            startServiceCompat(intent)
-        }
-
-        btnOverlayPermission.setOnClickListener {
-            Toast.makeText(
-                this,
-                "已内置「免悬浮窗透明窗口 + 无声听书级保活」，无需开启被汉王禁用的悬浮窗权限！",
-                Toast.LENGTH_LONG
-            ).show()
-            requestIgnoreBatteryOptimizations()
+        btnCycleSound.setOnClickListener {
+            sendServiceAction(PomodoroForegroundService.ACTION_CYCLE_SOUND_PRESET)
         }
 
         btnBatteryWhitelist.setOnClickListener { requestIgnoreBatteryOptimizations() }
-
-        btnNotificationSettings.setOnClickListener {
-            try {
-                val intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
-                    putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
-                }
-                startActivity(intent)
-            } catch (_: Exception) {
-                openAppDetailsSettings()
-            }
-        }
-
-        btnAutoStartSettings.setOnClickListener { openAppDetailsSettings() }
     }
 
     private fun applyCustomDurations(workMin: Int, restMin: Int) {
@@ -334,22 +219,14 @@ class MainActivity : AppCompatActivity() {
         remainingSec: Int,
         workMin: Int,
         restMin: Int,
-        lockRuleName: String,
         highSpeed: Boolean,
-        presetName: String,
-        minuteTick: Boolean,
-        lockscreenNotif: Boolean,
+        soundName: String,
         todayCount: Int,
         totalCount: Int,
         eventMsg: String
     ) {
         currentWorkMinutes = workMin
         currentRestMinutes = restMin
-        currentLockscreenNotif = lockscreenNotif
-        currentLockRule = runCatching { PomodoroForegroundService.LockRuleMode.valueOf(lockRuleName) }
-            .getOrDefault(PomodoroForegroundService.LockRuleMode.ABORT_ON_LOCK)
-        currentSoundPreset = runCatching { MinimalistSoundEngine.SoundPreset.valueOf(presetName) }
-            .getOrDefault(MinimalistSoundEngine.SoundPreset.CRISP_TICK)
 
         if (runState == PomodoroForegroundService.RunState.RUNNING.name) {
             window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -357,7 +234,7 @@ class MainActivity : AppCompatActivity() {
             window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         }
 
-        tvSubtitleRule.text = "工作${workMin}分 → 休息${restMin}分 循环 · ${currentLockRule.displayName}"
+        tvSubtitleRule.text = "工作${workMin}分 / 休息${restMin}分 · 锁屏自动清零 · 开启重新计时"
 
         val formattedTime = if (highSpeed) {
             val m = remainingSec / 60
@@ -369,36 +246,36 @@ class MainActivity : AppCompatActivity() {
         }
 
         if (phase == PomodoroForegroundService.Phase.WORK.name) {
+            // 工作阶段：正常显示倒计时与控制栏
+            layoutTopHeader.visibility = View.VISIBLE
+            tvPhaseBanner.visibility = View.VISIBLE
             tvPhaseBanner.text = "当前阶段：专注工作（${workMin} 分钟）"
             tvPhaseBanner.setBackgroundColor(Color.BLACK)
             tvPhaseBanner.setTextColor(Color.WHITE)
 
-            // 工作阶段：显示超大倒计时数字，隐藏趴着的大猫
-            layoutWorkTimerStage.visibility = android.view.View.VISIBLE
-            restingCatView.visibility = android.view.View.GONE
+            layoutWorkTimerStage.visibility = View.VISIBLE
+            layoutBottomControls.visibility = View.VISIBLE
+            restingCatView.visibility = View.GONE
             restingCatView.setWagging(false)
         } else {
-            tvPhaseBanner.text = "当前阶段：放松休息（${restMin} 分钟 · 大猫霸屏休息中）"
-            tvPhaseBanner.setBackgroundColor(Color.WHITE)
-            tvPhaseBanner.setTextColor(Color.BLACK)
+            // 休息阶段（小猫跳出来的时候）：去掉所有其他功能和按钮，全屏只展示小猫与休息倒计时！
+            layoutTopHeader.visibility = View.GONE
+            tvPhaseBanner.visibility = View.GONE
+            layoutWorkTimerStage.visibility = View.GONE
+            layoutBottomControls.visibility = View.GONE
+            layoutSettingsDrawer.visibility = View.GONE
+            isSettingsExpanded = false
 
-            // 休息阶段：出现趴着摇尾巴的线性大猫挡住屏幕中央！
-            layoutWorkTimerStage.visibility = android.view.View.GONE
-            restingCatView.visibility = android.view.View.VISIBLE
+            restingCatView.visibility = View.VISIBLE
             restingCatView.setWagging(runState == PomodoroForegroundService.RunState.RUNNING.name)
             restingCatView.updateRestCountdown(
                 timeText = formattedTime,
-                subtitle = "休息还剩 ${formattedTime} ${if (highSpeed) "" else "分钟"} · 点击大猫摸摸尾巴"
+                subtitle = if (highSpeed) "休息剩余" else "分钟休息剩余"
             )
         }
 
         tvTimerDisplay.text = formattedTime
-        tvTimerUnitHint.text = if (highSpeed) {
-            "高速刷新模式 · 每秒更新"
-        } else {
-            "分钟剩余 · 墨水屏按分刷新模式"
-        }
-
+        tvTimerUnitHint.text = if (highSpeed) "分 : 秒（每秒刷新）" else "分钟剩余（每分刷新）"
         tvStatusSubtitle.text = eventMsg
 
         btnStartPause.text = when (runState) {
@@ -409,50 +286,18 @@ class MainActivity : AppCompatActivity() {
 
         btnReset.text = "重置(${workMin}分)"
         btnCycleDurationPreset.text = "预设切换：工作${workMin}分 / 休息${restMin}分 (点此切换)"
-        btnToggleLockRule.text = "锁屏规则：${currentLockRule.displayName}"
-        btnToggleLockscreenNotif.text = if (lockscreenNotif) {
-            "锁屏通知提示：已开启（锁屏实时显示剩余时长）"
-        } else {
-            "锁屏通知提示：已关闭（锁屏隐藏番茄钟通知）"
-        }
-        btnCycleSoundPreset.text = "提醒音效：${currentSoundPreset.displayName} (点此切换/试听)"
-
-        if (cbHighSpeedMode.isChecked != highSpeed) {
-            cbHighSpeedMode.setOnCheckedChangeListener(null)
-            cbHighSpeedMode.isChecked = highSpeed
-            cbHighSpeedMode.setOnCheckedChangeListener { _, isChecked ->
-                val intent = Intent(this, PomodoroForegroundService::class.java).apply {
-                    action = PomodoroForegroundService.ACTION_SET_HIGH_SPEED
-                    putExtra(PomodoroForegroundService.EXTRA_HIGH_SPEED, isChecked)
-                }
-                startServiceCompat(intent)
-            }
-        }
-
-        if (cbMinuteTick.isChecked != minuteTick) {
-            cbMinuteTick.setOnCheckedChangeListener(null)
-            cbMinuteTick.isChecked = minuteTick
-            cbMinuteTick.setOnCheckedChangeListener { _, isChecked ->
-                val intent = Intent(this, PomodoroForegroundService::class.java).apply {
-                    action = PomodoroForegroundService.ACTION_SET_MINUTE_TICK
-                    putExtra(PomodoroForegroundService.EXTRA_MINUTE_TICK, isChecked)
-                }
-                startServiceCompat(intent)
-            }
-        }
-
+        btnToggleSpeed.text = if (highSpeed) "刷新：分:秒(每秒)" else "刷新：仅分钟(省电)"
+        btnCycleSound.text = "音效：${soundName}"
         tvStatsSummary.text = "今日完成番茄：${todayCount} 个   |   历史累计：${totalCount} 个"
     }
 
-    private fun triggerEInkScreenInvertFlash() {
-        flashHandler.removeCallbacksAndMessages(null)
-        val intervals = longArrayOf(0L, 350L, 700L, 1050L, 1400L, 1750L)
-        intervals.forEachIndexed { index, delayMs ->
-            flashHandler.postDelayed({
-                val invert = (index % 2 == 0)
-                rootContainer.setBackgroundColor(if (invert) Color.BLACK else Color.WHITE)
-                tvTimerDisplay.setTextColor(if (invert) Color.WHITE else Color.BLACK)
-                tvTimerUnitHint.setTextColor(if (invert) Color.WHITE else Color.BLACK)
+    private fun triggerScreenInvertFlash() {
+        val flashSteps = longArrayOf(0L, 280L, 560L, 840L)
+        flashSteps.forEachIndexed { index, delayMs ->
+            uiHandler.postDelayed({
+                val inverted = index % 2 == 0
+                rootContainer.setBackgroundColor(if (inverted) Color.BLACK else Color.WHITE)
+                tvTimerDisplay.setTextColor(if (inverted) Color.WHITE else Color.BLACK)
             }, delayMs)
         }
     }
@@ -466,34 +311,9 @@ class MainActivity : AppCompatActivity() {
                         data = Uri.parse("package:$packageName")
                     }
                     startActivity(intent)
-                } catch (_: Exception) {
-                    openAppDetailsSettings()
-                }
+                } catch (_: Exception) {}
             } else {
-                Toast.makeText(this, "已在电池优化白名单中", Toast.LENGTH_SHORT).show()
-            }
-        }
-    }
-
-    private fun hasOverlayPermission(): Boolean {
-        return Build.VERSION.SDK_INT < Build.VERSION_CODES.M || Settings.canDrawOverlays(this)
-    }
-
-    private fun requestOverlayPermission() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            try {
-                Toast.makeText(
-                    this,
-                    "请开启「显示在其他应用上层」开关，休息时黑猫才能直接跳到微信读书上方霸屏！",
-                    Toast.LENGTH_LONG
-                ).show()
-                val intent = Intent(
-                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                    Uri.parse("package:$packageName")
-                )
-                startActivity(intent)
-            } catch (_: Exception) {
-                openAppDetailsSettings()
+                Toast.makeText(this, "已在电池白名单中", Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -502,22 +322,8 @@ class MainActivity : AppCompatActivity() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
             val ignored = pm.isIgnoringBatteryOptimizations(packageName)
-            btnBatteryWhitelist.text = if (ignored) "电池白名单:已开" else "1.电池白名单"
-            btnOverlayPermission.text = if (ignored) {
-                "✓ 免悬浮窗透明霸屏 + 无声听书保活：已就绪"
-            } else {
-                "★ 点此开启「电池无限制白名单」（配合无声听书防杀）"
-            }
+            btnBatteryWhitelist.text = if (ignored) "✓ 电池白名单：已开启" else "点此开启「电池白名单」（防杀后台）"
         }
-    }
-
-    private fun openAppDetailsSettings() {
-        try {
-            val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-                data = Uri.parse("package:$packageName")
-            }
-            startActivity(intent)
-        } catch (_: Exception) {}
     }
 
     private fun sendServiceAction(actionName: String) {
@@ -552,7 +358,7 @@ class MainActivity : AppCompatActivity() {
             exitAppCompletely()
         } else {
             lastBackPressTime = now
-            Toast.makeText(this, "再按一次返回彻底退出程序（或点右上角「退出」）", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "再按一次返回彻底退出程序", Toast.LENGTH_SHORT).show()
         }
     }
 

@@ -71,31 +71,18 @@ class PomodoroStatsRepository(context: Context) {
         prefs.edit().putInt(KEY_REST_MINUTES, minutes.coerceIn(1, 90)).apply()
     }
 
-    fun getLockRuleMode(): PomodoroForegroundService.LockRuleMode {
-        val saved = prefs.getString(
-            KEY_LOCK_RULE_MODE,
-            PomodoroForegroundService.LockRuleMode.ABORT_ON_LOCK.name
-        ) ?: PomodoroForegroundService.LockRuleMode.ABORT_ON_LOCK.name
-        return runCatching { PomodoroForegroundService.LockRuleMode.valueOf(saved) }
-            .getOrDefault(PomodoroForegroundService.LockRuleMode.ABORT_ON_LOCK)
-    }
-
-    fun setLockRuleMode(mode: PomodoroForegroundService.LockRuleMode) {
-        prefs.edit().putString(KEY_LOCK_RULE_MODE, mode.name).apply()
-    }
-
-    fun isHighSpeedRefreshEnabled(): Boolean {
+    fun isHighSpeedMode(): Boolean {
         return prefs.getBoolean(KEY_HIGH_SPEED_MODE, false)
     }
 
-    fun setHighSpeedRefreshEnabled(enabled: Boolean) {
+    fun setHighSpeedMode(enabled: Boolean) {
         prefs.edit().putBoolean(KEY_HIGH_SPEED_MODE, enabled).apply()
     }
 
     fun getSoundPreset(): MinimalistSoundEngine.SoundPreset {
-        val saved = prefs.getString(KEY_SOUND_PRESET, MinimalistSoundEngine.SoundPreset.CRISP_TICK.name)
+        val raw = prefs.getString(KEY_SOUND_PRESET, MinimalistSoundEngine.SoundPreset.CRISP_TICK.name)
             ?: MinimalistSoundEngine.SoundPreset.CRISP_TICK.name
-        return runCatching { MinimalistSoundEngine.SoundPreset.valueOf(saved) }
+        return runCatching { MinimalistSoundEngine.SoundPreset.valueOf(raw) }
             .getOrDefault(MinimalistSoundEngine.SoundPreset.CRISP_TICK)
     }
 
@@ -103,31 +90,12 @@ class PomodoroStatsRepository(context: Context) {
         prefs.edit().putString(KEY_SOUND_PRESET, preset.name).apply()
     }
 
-    fun getAlertMode(): MinimalistSoundEngine.AlertMode {
-        val saved = prefs.getString(KEY_ALERT_MODE, MinimalistSoundEngine.AlertMode.SOUND_PRIMARY.name)
-            ?: MinimalistSoundEngine.AlertMode.SOUND_PRIMARY.name
-        return runCatching { MinimalistSoundEngine.AlertMode.valueOf(saved) }
-            .getOrDefault(MinimalistSoundEngine.AlertMode.SOUND_PRIMARY)
+    fun isMuteFlashOnly(): Boolean {
+        return prefs.getBoolean(KEY_ALERT_MODE, false)
     }
 
-    fun setAlertMode(mode: MinimalistSoundEngine.AlertMode) {
-        prefs.edit().putString(KEY_ALERT_MODE, mode.name).apply()
-    }
-
-    fun isMinuteTickEnabled(): Boolean {
-        return prefs.getBoolean(KEY_MINUTE_TICK, false)
-    }
-
-    fun setMinuteTickEnabled(enabled: Boolean) {
-        prefs.edit().putBoolean(KEY_MINUTE_TICK, enabled).apply()
-    }
-
-    fun isLockscreenNotificationEnabled(): Boolean {
-        return prefs.getBoolean(KEY_LOCKSCREEN_NOTIF, true)
-    }
-
-    fun setLockscreenNotificationEnabled(enabled: Boolean) {
-        prefs.edit().putBoolean(KEY_LOCKSCREEN_NOTIF, enabled).apply()
+    fun setMuteFlashOnly(mute: Boolean) {
+        prefs.edit().putBoolean(KEY_ALERT_MODE, mute).apply()
     }
 
     fun isUserExited(): Boolean {

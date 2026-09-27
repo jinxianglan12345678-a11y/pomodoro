@@ -8,32 +8,17 @@ import android.util.AttributeSet
 import android.view.View
 import kotlin.math.min
 
-/**
- * 墨水屏高对比度极简柔软纯黑大猫视图（内置 4 款柔和三次贝塞尔曲线剪影）
- * - 款式 0: ① 软糯揣手猫团（闭眼打盹团子）
- * - 款式 1: ② 慵懒大眼趴趴猫（液态贴地 + 灵动圆眼）
- * - 款式 2: ③ 蜷缩熟睡黑猫丸（禅意鹅卵石圆弧）
- * - 款式 3: ④ 桌沿垂尾摇摆猫（尾巴垂在横线下方如钟摆晃动）
- */
 class RestingCatEInkView @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null,
     defStyleAttr: Int = 0
 ) : View(context, attrs, defStyleAttr) {
 
-    private val prefs = context.getSharedPreferences("clear6_pomodoro_prefs", Context.MODE_PRIVATE)
-    private var catStyleIndex: Int = prefs.getInt("cat_style_index", 1).coerceIn(0, 3)
+    private var catStyleIndex: Int = 1
     private var tailFrame: Int = 0 // 0, 1, 2
     private var restRemainingText: String = "05"
-    private var restUnitLabel: String = "分钟休息剩余 · 放下书本远眺"
+    private var restUnitLabel: String = "分钟休息剩余"
     private var isWaggingActive: Boolean = false
-
-    private val styleNames = arrayOf(
-        "① 半眯眼趴趴黑猫",
-        "② 圆瞳灵动趴趴黑猫",
-        "③ 熟睡闭眼趴趴黑猫",
-        "④ 高翘摇尾趴趴黑猫"
-    )
 
     private val wagHandler = Handler(Looper.getMainLooper())
     private val wagRunnable = object : Runnable {
@@ -77,12 +62,6 @@ class RestingCatEInkView @JvmOverloads constructor(
         xfermode = PorterDuffXfermode(PorterDuff.Mode.CLEAR)
     }
 
-    private val timeTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.BLACK
-        textAlign = Paint.Align.CENTER
-        typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
-    }
-
     private val subtitlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.BLACK
         textAlign = Paint.Align.CENTER
@@ -92,12 +71,8 @@ class RestingCatEInkView @JvmOverloads constructor(
     init {
         setBackgroundColor(Color.TRANSPARENT)
         setLayerType(LAYER_TYPE_SOFTWARE, null)
-        setOnClickListener {
-            catStyleIndex = (catStyleIndex + 1) % 4
-            prefs.edit().putInt("cat_style_index", catStyleIndex).apply()
-            tailFrame = (tailFrame + 1) % 3
-            invalidate()
-        }
+        isClickable = false
+        isFocusable = false
     }
 
     fun updateRestCountdown(timeText: String, subtitle: String) {

@@ -44,8 +44,6 @@
             android:launchMode="singleTop"
             android:taskAffinity="com.hanvon.clear6.pomodoro.catoverlay"
             android:excludeFromRecents="true"
-            android:showWhenLocked="true"
-            android:turnScreenOn="true"
             android:screenOrientation="portrait"
             android:theme="@style/Theme.Clear6Pomodoro.TranslucentOverlay" />
 
