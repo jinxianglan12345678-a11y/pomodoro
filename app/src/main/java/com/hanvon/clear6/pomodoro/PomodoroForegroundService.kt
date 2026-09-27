@@ -2,9 +2,21 @@ package com.hanvon.clear6.pomodoro
 
 import android.app.*
 import android.content.*
+import android.graphics.Color
+import android.graphics.PixelFormat
+import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.os.*
+import android.provider.Settings
+import android.util.TypedValue
+import android.view.Gravity
+import android.view.View
+import android.view.WindowManager
+import android.widget.Button
+import android.widget.LinearLayout
+import android.widget.TextView
 import androidx.core.app.NotificationCompat
 
 class PomodoroForegroundService : Service() {
@@ -38,10 +50,13 @@ class PomodoroForegroundService : Service() {
         const val ACTION_SET_MINUTE_TICK = "com.hanvon.clear6.pomodoro.ACTION_SET_MINUTE_TICK"
         const val ACTION_SET_LOCKSCREEN_NOTIF = "com.hanvon.clear6.pomodoro.ACTION_SET_LOCKSCREEN_NOTIF"
         const val ACTION_REQUEST_UI_SYNC = "com.hanvon.clear6.pomodoro.ACTION_REQUEST_UI_SYNC"
+        const val ACTION_STOP_AND_EXIT = "com.hanvon.clear6.pomodoro.ACTION_STOP_AND_EXIT"
+        const val ACTION_START_5S_OVERLAY_TEST = "com.hanvon.clear6.pomodoro.ACTION_START_5S_OVERLAY_TEST"
 
         // UI 广播 Action
         const val BROADCAST_UI_STATE = "com.hanvon.clear6.pomodoro.BROADCAST_UI_STATE"
         const val BROADCAST_EINK_FLASH = "com.hanvon.clear6.pomodoro.BROADCAST_EINK_FLASH"
+        const val BROADCAST_EXIT_APP = "com.hanvon.clear6.pomodoro.BROADCAST_EXIT_APP"
 
         const val EXTRA_PHASE = "extra_phase"
         const val EXTRA_RUN_STATE = "extra_run_state"
@@ -76,8 +91,15 @@ class PomodoroForegroundService : Service() {
 
     private lateinit var statsRepo: PomodoroStatsRepository
     private lateinit var notificationManager: NotificationManager
+    private lateinit var windowManager: WindowManager
     private var screenWakeLock: PowerManager.WakeLock? = null
     private var cpuPartialWakeLock: PowerManager.WakeLock? = null
+
+    // 跨应用全屏透明黑猫霸屏悬浮窗（在微信读书/掌阅看书时，休息阶段直接跳出趴在书页上）
+    private var overlayRootLayout: LinearLayout? = null
+    private var overlayCatView: RestingCatEInkView? = null
+    private var overlayBgModeBtn: Button? = null
+    private var isOverlayTransparentBg: Boolean = true
 
     private val mainHandler = Handler(Looper.getMainLooper())
 
@@ -146,6 +168,7 @@ class PomodoroForegroundService : Service() {
         super.onCreate()
         statsRepo = PomodoroStatsRepository(this)
         notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
 
         workDurationMinutes = statsRepo.getWorkMinutes()
         restDurationMinutes = statsRepo.getRestMinutes()
@@ -165,7 +188,40 @@ class PomodoroForegroundService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
+            ACTION_STOP_AND_EXIT -> {
+                statsRepo.setUserExited(true)
+                mainHandler.removeCallbacksAndMessages(null)
+                dismissRestCatOverlay()
+                releaseAllWakeLocks()
+                sendBroadcast(Intent(BROADCAST_EXIT_APP).apply { setPackage(packageName) })
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                } else {
+                    @Suppress("DEPRECATION")
+                    stopForeground(true)
+                }
+                notificationManager.cancelAll()
+                stopSelf()
+                return START_NOT_STICKY
+            }
+            ACTION_START_5S_OVERLAY_TEST -> {
+                statsRepo.setUserExited(false)
+                mainHandler.removeCallbacks(tickRunnable)
+                dismissRestCatOverlay()
+                lockRuleMode = LockRuleMode.CONTINUE_ON_LOCK
+                statsRepo.setLockRuleMode(lockRuleMode)
+                currentPhase = Phase.WORK
+                remainingSeconds = 5
+                currentRunState = RunState.RUNNING
+                lastDisplayedMinute = -1
+                lastEventMessage = "5秒跨应用霸屏测试进行中：5秒后小猫将直接跳到微信读书上方！"
+                acquireScreenBrightWakeLock()
+                acquireCpuPartialWakeLock()
+                maybeRefreshEInkOutputs(force = true)
+                mainHandler.postDelayed(tickRunnable, 1000L)
+            }
             ACTION_SERVICE_INIT -> {
+                statsRepo.setUserExited(false)
                 if (currentRunState == RunState.STOPPED_ON_LOCK) {
                     restartFreshWorkOnUnlock("应用已就绪：开始 ${workDurationMinutes} 分钟工作计时")
                 } else {
@@ -255,6 +311,7 @@ class PomodoroForegroundService : Service() {
 
     private fun restartFreshWorkOnUnlock(reason: String) {
         mainHandler.removeCallbacks(tickRunnable)
+        dismissRestCatOverlay()
         currentPhase = Phase.WORK
         remainingSeconds = workDurationSec
         currentRunState = RunState.RUNNING
@@ -269,6 +326,7 @@ class PomodoroForegroundService : Service() {
 
     private fun abortAndDiscardOnScreenOff(reason: String) {
         mainHandler.removeCallbacks(tickRunnable)
+        dismissRestCatOverlay()
         releaseAllWakeLocks()
 
         currentPhase = Phase.WORK
@@ -306,6 +364,7 @@ class PomodoroForegroundService : Service() {
 
     private fun resetToFreshWork(reason: String) {
         mainHandler.removeCallbacks(tickRunnable)
+        dismissRestCatOverlay()
         currentPhase = Phase.WORK
         remainingSeconds = workDurationSec
         currentRunState = RunState.RUNNING
@@ -322,11 +381,12 @@ class PomodoroForegroundService : Service() {
         if (currentPhase == Phase.WORK) {
             currentPhase = Phase.REST
             remainingSeconds = restDurationSec
-            lastEventMessage = "手动跳过工作（未满时长不计入统计）→ 进入 ${restDurationMinutes} 分钟休息"
+            lastEventMessage = "手动跳过工作（未满时长不计入统计）→ 小猫已跳出霸屏休息 ${restDurationMinutes} 分钟"
         } else {
+            dismissRestCatOverlay()
             currentPhase = Phase.WORK
             remainingSeconds = workDurationSec
-            lastEventMessage = "手动跳过休息 → 进入下一轮 ${workDurationMinutes} 分钟工作"
+            lastEventMessage = "已结束休息收起小猫 → 进入下一轮 ${workDurationMinutes} 分钟工作"
         }
         currentRunState = RunState.RUNNING
         lastDisplayedMinute = -1
@@ -342,19 +402,20 @@ class PomodoroForegroundService : Service() {
             statsRepo.recordCompletedPomodoro()
             currentPhase = Phase.REST
             remainingSeconds = restDurationSec
-            lastEventMessage = "已完成1个完整番茄！自动进入 ${restDurationMinutes} 分钟休息"
+            lastEventMessage = "已完成1个完整番茄！小猫已跳出霸屏休息 ${restDurationMinutes} 分钟"
             triggerPhaseTransitionAlert(
-                title = "工作 ${workDurationMinutes} 分钟结束 · 开始休息 ${restDurationMinutes} 分钟",
-                body = "今日已完成 ${statsRepo.getTodayCount()} 个番茄，请放松眼睛休息 ${restDurationMinutes} 分钟。",
+                title = "工作 ${workDurationMinutes} 分钟结束 · 小猫霸屏休息 ${restDurationMinutes} 分钟",
+                body = "今日已完成 ${statsRepo.getTodayCount()} 个番茄，小猫已占领书页，请远眺休息 ${restDurationMinutes} 分钟。",
                 isWorkCompleted = true
             )
         } else {
+            dismissRestCatOverlay()
             currentPhase = Phase.WORK
             remainingSeconds = workDurationSec
-            lastEventMessage = "${restDurationMinutes} 分钟休息结束！自动进入下一轮 ${workDurationMinutes} 分钟工作"
+            lastEventMessage = "${restDurationMinutes} 分钟休息结束！小猫已收起，自动进入下一轮 ${workDurationMinutes} 分钟工作"
             triggerPhaseTransitionAlert(
-                title = "休息 ${restDurationMinutes} 分钟结束 · 开始新一轮工作",
-                body = "已自动开启新一轮 ${workDurationMinutes} 分钟专注工作。",
+                title = "休息 ${restDurationMinutes} 分钟结束 · 小猫让出书页",
+                body = "已自动收起霸屏黑猫，开启新一轮 ${workDurationMinutes} 分钟专注看书/工作。",
                 isWorkCompleted = false
             )
         }
@@ -382,6 +443,7 @@ class PomodoroForegroundService : Service() {
         }
 
         notificationManager.notify(NOTIFICATION_ID_TIMER, buildOngoingNotification())
+        syncRestCatOverlayState()
 
         val uiIntent = Intent(BROADCAST_UI_STATE).apply {
             setPackage(packageName)
@@ -408,21 +470,26 @@ class PomodoroForegroundService : Service() {
 
         val contentIntent = PendingIntent.getActivity(
             this, 0,
-            Intent(this, MainActivity::class.java),
+            Intent(this, MainActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val alertNotification = NotificationCompat.Builder(this, CHANNEL_ID_ALERT)
+        val alertBuilder = NotificationCompat.Builder(this, CHANNEL_ID_ALERT)
             .setSmallIcon(R.drawable.ic_pomodoro_eink)
             .setContentTitle(title)
             .setContentText(body)
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setPriority(NotificationCompat.PRIORITY_MAX)
             .setCategory(NotificationCompat.CATEGORY_ALARM)
             .setAutoCancel(true)
             .setContentIntent(contentIntent)
-            .build()
 
-        notificationManager.notify(NOTIFICATION_ID_ALERT, alertNotification)
+        if (isWorkCompleted) {
+            alertBuilder.setFullScreenIntent(contentIntent, true)
+        }
+
+        notificationManager.notify(NOTIFICATION_ID_ALERT, alertBuilder.build())
 
         val shouldPlaySound = when (alertMode) {
             MinimalistSoundEngine.AlertMode.SOUND_PRIMARY -> hasAudioSpeaker && soundPreset != MinimalistSoundEngine.SoundPreset.MUTE
@@ -492,6 +559,12 @@ class PomodoroForegroundService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
+        val exitPending = PendingIntent.getService(
+            this, 14,
+            Intent(this, PomodoroForegroundService::class.java).apply { action = ACTION_STOP_AND_EXIT },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
         val phaseLabel = if (currentPhase == Phase.WORK) {
             "工作中 (${workDurationMinutes}分钟)"
         } else {
@@ -530,7 +603,7 @@ class PomodoroForegroundService : Service() {
             .setContentIntent(openAppIntent)
             .addAction(0, pauseActionLabel, togglePausePending)
             .addAction(0, "跳过", skipPending)
-            .addAction(0, "重置", resetPending)
+            .addAction(0, "退出程序", exitPending)
             .build()
     }
 
@@ -605,6 +678,185 @@ class PomodoroForegroundService : Service() {
         registerReceiver(screenEventReceiver, filter)
     }
 
+    private fun dpToPx(dp: Int): Int {
+        return TypedValue.applyDimension(
+            TypedValue.COMPLEX_UNIT_DIP,
+            dp.toFloat(),
+            resources.displayMetrics
+        ).toInt()
+    }
+
+    private fun createBorderedButtonBackground(fillColor: Int): GradientDrawable {
+        return GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            setColor(fillColor)
+            setStroke(dpToPx(2), Color.BLACK)
+        }
+    }
+
+    /**
+     * 核心功能：当进入 REST 休息阶段时，直接通过 WindowManager (TYPE_APPLICATION_OVERLAY)
+     * 在微信读书 / KOReader 等任意阅读软件上方弹出全屏透明背景大黑猫占领书页！
+     * 休息 5 分钟结束自动移除悬浮层，无缝继续看书。
+     */
+    private fun syncRestCatOverlayState() {
+        if (currentPhase != Phase.REST || currentRunState == RunState.STOPPED_ON_LOCK) {
+            dismissRestCatOverlay()
+            return
+        }
+
+        val canOverlay = Build.VERSION.SDK_INT < Build.VERSION_CODES.M || Settings.canDrawOverlays(this)
+        if (!canOverlay) {
+            // 若用户尚未开启悬浮窗权限，降级直接拉起番茄钟主界面霸屏
+            try {
+                val bringFrontIntent = Intent(this, MainActivity::class.java).apply {
+                    addFlags(
+                        Intent.FLAG_ACTIVITY_NEW_TASK or
+                            Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
+                            Intent.FLAG_ACTIVITY_SINGLE_TOP
+                    )
+                }
+                startActivity(bringFrontIntent)
+            } catch (_: Exception) {}
+            return
+        }
+
+        val formattedTime = if (highSpeedRefreshMode) {
+            val m = remainingSeconds / 60
+            val s = remainingSeconds % 60
+            String.format("%02d:%02d", m, s)
+        } else {
+            val m = (remainingSeconds + 59) / 60
+            String.format("%02d", m)
+        }
+        val subtitleText = "分钟休息剩余 · 黑猫已占领书页（请远眺护眼）"
+
+        if (overlayRootLayout == null) {
+            try {
+                val root = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    gravity = Gravity.CENTER
+                    setBackgroundColor(if (isOverlayTransparentBg) Color.TRANSPARENT else Color.WHITE)
+                    setPadding(dpToPx(16), dpToPx(24), dpToPx(16), dpToPx(24))
+                    isClickable = true
+                    isFocusable = true
+                }
+
+                val catView = RestingCatEInkView(this).apply {
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        dpToPx(380)
+                    )
+                    updateRestCountdown(formattedTime, subtitleText)
+                    setWagging(currentRunState == RunState.RUNNING)
+                }
+                overlayCatView = catView
+                root.addView(catView)
+
+                // 底部墨水屏快捷控制条（白底黑框，确保在微信读书文字上方清晰可点）
+                val bar = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER
+                    background = createBorderedButtonBackground(Color.WHITE)
+                    setPadding(dpToPx(8), dpToPx(8), dpToPx(8), dpToPx(8))
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT
+                    ).apply {
+                        topMargin = dpToPx(8)
+                    }
+                }
+
+                val btnSwitchCat = Button(this).apply {
+                    text = "🎲 换只猫"
+                    setTextColor(Color.BLACK)
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+                    typeface = Typeface.DEFAULT_BOLD
+                    background = createBorderedButtonBackground(Color.WHITE)
+                    setPadding(dpToPx(10), dpToPx(4), dpToPx(10), dpToPx(4))
+                    setOnClickListener {
+                        catView.performClick()
+                    }
+                }
+
+                val btnToggleBg = Button(this).apply {
+                    text = if (isOverlayTransparentBg) "底色:透明趴书页" else "底色:纯白遮书页"
+                    setTextColor(Color.BLACK)
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+                    typeface = Typeface.DEFAULT_BOLD
+                    background = createBorderedButtonBackground(Color.WHITE)
+                    setPadding(dpToPx(10), dpToPx(4), dpToPx(10), dpToPx(4))
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT
+                    ).apply {
+                        leftMargin = dpToPx(6)
+                        rightMargin = dpToPx(6)
+                    }
+                    setOnClickListener {
+                        isOverlayTransparentBg = !isOverlayTransparentBg
+                        root.setBackgroundColor(if (isOverlayTransparentBg) Color.TRANSPARENT else Color.WHITE)
+                        text = if (isOverlayTransparentBg) "底色:透明趴书页" else "底色:纯白遮书页"
+                    }
+                }
+                overlayBgModeBtn = btnToggleBg
+
+                val btnSkipRest = Button(this).apply {
+                    text = "结束休息 · 继续看书"
+                    setTextColor(Color.WHITE)
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+                    typeface = Typeface.DEFAULT_BOLD
+                    background = createBorderedButtonBackground(Color.BLACK)
+                    setPadding(dpToPx(12), dpToPx(4), dpToPx(12), dpToPx(4))
+                    setOnClickListener {
+                        skipCurrentPhaseManually()
+                    }
+                }
+
+                bar.addView(btnSwitchCat)
+                bar.addView(btnToggleBg)
+                bar.addView(btnSkipRest)
+                root.addView(bar)
+
+                val overlayType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+                } else {
+                    @Suppress("DEPRECATION")
+                    WindowManager.LayoutParams.TYPE_PHONE
+                }
+
+                val params = WindowManager.LayoutParams(
+                    WindowManager.LayoutParams.MATCH_PARENT,
+                    WindowManager.LayoutParams.MATCH_PARENT,
+                    overlayType,
+                    WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or
+                        WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                        WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+                    PixelFormat.TRANSLUCENT
+                ).apply {
+                    gravity = Gravity.CENTER
+                }
+
+                windowManager.addView(root, params)
+                overlayRootLayout = root
+            } catch (_: Exception) {}
+        } else {
+            overlayCatView?.updateRestCountdown(formattedTime, subtitleText)
+            overlayCatView?.setWagging(currentRunState == RunState.RUNNING)
+        }
+    }
+
+    private fun dismissRestCatOverlay() {
+        val view = overlayRootLayout ?: return
+        overlayCatView?.setWagging(false)
+        try {
+            windowManager.removeView(view)
+        } catch (_: Exception) {}
+        overlayRootLayout = null
+        overlayCatView = null
+        overlayBgModeBtn = null
+    }
+
     private fun createNotificationChannels() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val ongoingChannel = NotificationChannel(
@@ -633,6 +885,7 @@ class PomodoroForegroundService : Service() {
 
     override fun onDestroy() {
         mainHandler.removeCallbacks(tickRunnable)
+        dismissRestCatOverlay()
         releaseAllWakeLocks()
         try {
             unregisterReceiver(screenEventReceiver)

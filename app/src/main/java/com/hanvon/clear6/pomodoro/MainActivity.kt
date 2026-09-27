@@ -12,6 +12,9 @@ import androidx.appcompat.app.AppCompatActivity
 class MainActivity : AppCompatActivity() {
 
     private lateinit var rootContainer: LinearLayout
+    private lateinit var btnTest5sOverlay: Button
+    private lateinit var btnMinimizeBg: Button
+    private lateinit var btnExitApp: Button
     private lateinit var tvSubtitleRule: TextView
     private lateinit var tvPhaseBanner: TextView
     private lateinit var layoutWorkTimerStage: LinearLayout
@@ -39,11 +42,13 @@ class MainActivity : AppCompatActivity() {
     private lateinit var cbHighSpeedMode: CheckBox
     private lateinit var cbMinuteTick: CheckBox
     private lateinit var tvStatsSummary: TextView
+    private lateinit var btnOverlayPermission: Button
     private lateinit var btnBatteryWhitelist: Button
     private lateinit var btnNotificationSettings: Button
     private lateinit var btnAutoStartSettings: Button
 
     private var isSettingsExpanded: Boolean = false
+    private var lastBackPressTime: Long = 0L
     private var currentWorkMinutes: Int = 15
     private var currentRestMinutes: Int = 5
     private var currentLockRule = PomodoroForegroundService.LockRuleMode.ABORT_ON_LOCK
@@ -86,6 +91,14 @@ class MainActivity : AppCompatActivity() {
                 PomodoroForegroundService.BROADCAST_EINK_FLASH -> {
                     triggerEInkScreenInvertFlash()
                 }
+                PomodoroForegroundService.BROADCAST_EXIT_APP -> {
+                    window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                        finishAndRemoveTask()
+                    } else {
+                        finish()
+                    }
+                }
             }
         }
     }
@@ -104,6 +117,9 @@ class MainActivity : AppCompatActivity() {
 
     private fun bindViews() {
         rootContainer = findViewById(R.id.rootContainer)
+        btnTest5sOverlay = findViewById(R.id.btnTest5sOverlay)
+        btnMinimizeBg = findViewById(R.id.btnMinimizeBg)
+        btnExitApp = findViewById(R.id.btnExitApp)
         tvSubtitleRule = findViewById(R.id.tvSubtitleRule)
         tvPhaseBanner = findViewById(R.id.tvPhaseBanner)
         layoutWorkTimerStage = findViewById(R.id.layoutWorkTimerStage)
@@ -129,12 +145,57 @@ class MainActivity : AppCompatActivity() {
         cbHighSpeedMode = findViewById(R.id.cbHighSpeedMode)
         cbMinuteTick = findViewById(R.id.cbMinuteTick)
         tvStatsSummary = findViewById(R.id.tvStatsSummary)
+        btnOverlayPermission = findViewById(R.id.btnOverlayPermission)
         btnBatteryWhitelist = findViewById(R.id.btnBatteryWhitelist)
         btnNotificationSettings = findViewById(R.id.btnNotificationSettings)
         btnAutoStartSettings = findViewById(R.id.btnAutoStartSettings)
     }
 
     private fun setupControls() {
+        // 顶部「5秒测试霸屏」按钮：一键验证在微信读书看书时，5秒后透明黑猫直接跳到书页上方占领屏幕
+        btnTest5sOverlay.setOnClickListener {
+            if (!hasOverlayPermission()) {
+                requestOverlayPermission()
+                return@setOnClickListener
+            }
+            sendServiceAction(PomodoroForegroundService.ACTION_START_5S_OVERLAY_TEST)
+            Toast.makeText(
+                this,
+                "已开启5秒倒计时！现在请打开微信读书，5秒后黑猫将直接跳上书页！",
+                Toast.LENGTH_LONG
+            ).show()
+            moveTaskToBack(true)
+        }
+
+        // 顶部「后台看书」按钮：最小化回到汉王书架打开微信读书，休息时间一到透明黑猫自动跳上书页
+        btnMinimizeBg.setOnClickListener {
+            if (currentLockRule == PomodoroForegroundService.LockRuleMode.ABORT_ON_LOCK) {
+                val intent = Intent(this, PomodoroForegroundService::class.java).apply {
+                    action = PomodoroForegroundService.ACTION_SET_LOCK_RULE
+                    putExtra(
+                        PomodoroForegroundService.EXTRA_LOCK_RULE,
+                        PomodoroForegroundService.LockRuleMode.CONTINUE_ON_LOCK.name
+                    )
+                }
+                startServiceCompat(intent)
+            }
+            if (!hasOverlayPermission()) {
+                requestOverlayPermission()
+                return@setOnClickListener
+            }
+            Toast.makeText(
+                this,
+                "已切入后台计时！休息时间一到，透明黑猫将直接跳到微信读书书页上方",
+                Toast.LENGTH_LONG
+            ).show()
+            moveTaskToBack(true)
+        }
+
+        // 顶部「退出」按钮：一键停止后台服务、释放常亮锁、清除通知栏并彻底关闭程序
+        btnExitApp.setOnClickListener {
+            exitAppCompletely()
+        }
+
         btnStartPause.setOnClickListener {
             sendServiceAction(PomodoroForegroundService.ACTION_TOGGLE_PAUSE)
         }
@@ -226,6 +287,14 @@ class MainActivity : AppCompatActivity() {
                 putExtra(PomodoroForegroundService.EXTRA_MINUTE_TICK, isChecked)
             }
             startServiceCompat(intent)
+        }
+
+        btnOverlayPermission.setOnClickListener {
+            if (hasOverlayPermission()) {
+                Toast.makeText(this, "跨应用悬浮窗霸屏权限已开启！休息时黑猫将直接跳到微信读书上方", Toast.LENGTH_SHORT).show()
+            } else {
+                requestOverlayPermission()
+            }
         }
 
         btnBatteryWhitelist.setOnClickListener { requestIgnoreBatteryOptimizations() }
@@ -400,11 +469,36 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun hasOverlayPermission(): Boolean {
+        return Build.VERSION.SDK_INT < Build.VERSION_CODES.M || Settings.canDrawOverlays(this)
+    }
+
+    private fun requestOverlayPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            try {
+                Toast.makeText(
+                    this,
+                    "请开启「显示在其他应用上层」开关，休息时黑猫才能直接跳到微信读书上方霸屏！",
+                    Toast.LENGTH_LONG
+                ).show()
+                val intent = Intent(
+                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                    Uri.parse("package:$packageName")
+                )
+                startActivity(intent)
+            } catch (_: Exception) {
+                openAppDetailsSettings()
+            }
+        }
+    }
+
     private fun updateBatteryButtonStatus() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
             val ignored = pm.isIgnoringBatteryOptimizations(packageName)
             btnBatteryWhitelist.text = if (ignored) "电池白名单:已开" else "1.电池白名单"
+            val overlayGranted = Settings.canDrawOverlays(this)
+            btnOverlayPermission.text = if (overlayGranted) "跨应用霸屏权限：已开启 (可在微信读书上方跳出黑猫)" else "★ 点此开启「跨应用跳出黑猫」悬浮窗权限（必开）"
         }
     }
 
@@ -424,6 +518,35 @@ class MainActivity : AppCompatActivity() {
         startServiceCompat(intent)
     }
 
+    private fun exitAppCompletely() {
+        PomodoroStatsRepository(this).setUserExited(true)
+        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        try {
+            val stopIntent = Intent(this, PomodoroForegroundService::class.java).apply {
+                action = PomodoroForegroundService.ACTION_STOP_AND_EXIT
+            }
+            startService(stopIntent)
+            stopService(Intent(this, PomodoroForegroundService::class.java))
+        } catch (_: Exception) {}
+        Toast.makeText(this, "番茄钟已彻底退出", Toast.LENGTH_SHORT).show()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            finishAndRemoveTask()
+        } else {
+            finish()
+        }
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onBackPressed() {
+        val now = System.currentTimeMillis()
+        if (now - lastBackPressTime < 2000L) {
+            exitAppCompletely()
+        } else {
+            lastBackPressTime = now
+            Toast.makeText(this, "再按一次返回彻底退出程序（或点右上角「退出」）", Toast.LENGTH_SHORT).show()
+        }
+    }
+
     private fun startServiceCompat(intent: Intent) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             startForegroundService(intent)
@@ -438,6 +561,7 @@ class MainActivity : AppCompatActivity() {
         val filter = IntentFilter().apply {
             addAction(PomodoroForegroundService.BROADCAST_UI_STATE)
             addAction(PomodoroForegroundService.BROADCAST_EINK_FLASH)
+            addAction(PomodoroForegroundService.BROADCAST_EXIT_APP)
         }
         registerReceiver(uiReceiver, filter)
         updateBatteryButtonStatus()

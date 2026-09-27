@@ -21,6 +21,7 @@ class PomodoroStatsRepository(context: Context) {
         private const val KEY_ALERT_MODE = "key_alert_mode"
         private const val KEY_MINUTE_TICK = "key_minute_tick"
         private const val KEY_LOCKSCREEN_NOTIF = "key_lockscreen_notif"
+        private const val KEY_USER_EXITED = "key_user_exited"
     }
 
     private fun currentDateKey(): String {
@@ -123,5 +124,13 @@ class PomodoroStatsRepository(context: Context) {
 
     fun setLockscreenNotificationEnabled(enabled: Boolean) {
         prefs.edit().putBoolean(KEY_LOCKSCREEN_NOTIF, enabled).apply()
+    }
+
+    fun isUserExited(): Boolean {
+        return prefs.getBoolean(KEY_USER_EXITED, false)
+    }
+
+    fun setUserExited(exited: Boolean) {
+        prefs.edit().putBoolean(KEY_USER_EXITED, exited).apply()
     }
 }

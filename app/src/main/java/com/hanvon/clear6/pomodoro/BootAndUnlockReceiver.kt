@@ -8,6 +8,8 @@ import android.os.Build
 class BootAndUnlockReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent?) {
         val action = intent?.action ?: return
+        // 若用户已主动点击「退出程序」，则解锁或重启时不自动拉起后台服务，彻底零耗电
+        if (PomodoroStatsRepository(context).isUserExited()) return
         when (action) {
             Intent.ACTION_BOOT_COMPLETED,
             Intent.ACTION_LOCKED_BOOT_COMPLETED,

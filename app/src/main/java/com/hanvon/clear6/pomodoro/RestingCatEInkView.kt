@@ -62,11 +62,19 @@ class RestingCatEInkView @JvmOverloads constructor(
         strokeJoin = Paint.Join.ROUND
     }
 
-    private val strokeWhitePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    private val strokeHaloWhitePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE
         style = Paint.Style.STROKE
         strokeCap = Paint.Cap.ROUND
         strokeJoin = Paint.Join.ROUND
+    }
+
+    private val strokeWhitePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.TRANSPARENT
+        style = Paint.Style.STROKE
+        strokeCap = Paint.Cap.ROUND
+        strokeJoin = Paint.Join.ROUND
+        xfermode = PorterDuffXfermode(PorterDuff.Mode.CLEAR)
     }
 
     private val timeTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -83,6 +91,7 @@ class RestingCatEInkView @JvmOverloads constructor(
 
     init {
         setBackgroundColor(Color.TRANSPARENT)
+        setLayerType(LAYER_TYPE_SOFTWARE, null)
         setOnClickListener {
             catStyleIndex = (catStyleIndex + 1) % 4
             prefs.edit().putInt("cat_style_index", catStyleIndex).apply()
@@ -126,9 +135,20 @@ class RestingCatEInkView @JvmOverloads constructor(
         fun sx(x: Float) = offsetX + x * scale
         fun sy(y: Float) = offsetY + y * scale
 
-        // 顶部极简休息倒计时（不遮挡黑猫剪影）
-        timeTextPaint.textSize = 44f * scale
-        canvas.drawText(restRemainingText + "  " + restUnitLabel, w * 0.5f, offsetY + 4f * scale, timeTextPaint)
+        // 顶部白底黑框胶囊倒计时横幅（在微信读书密集文字上方透明霸屏时依然 100% 清晰可读）
+        val bannerText = restRemainingText + "  " + restUnitLabel
+        subtitlePaint.textSize = 24f * scale
+        val textW = subtitlePaint.measureText(bannerText)
+        val bannerRect = RectF(
+            (w - textW) * 0.5f - 24f * scale,
+            offsetY - 34f * scale,
+            (w + textW) * 0.5f + 24f * scale,
+            offsetY + 14f * scale
+        )
+        canvas.drawRoundRect(bannerRect, 10f * scale, 10f * scale, fillWhitePaint)
+        strokeBlackPaint.strokeWidth = 3f * scale
+        canvas.drawRoundRect(bannerRect, 10f * scale, 10f * scale, strokeBlackPaint)
+        canvas.drawText(bannerText, w * 0.5f, offsetY - 2f * scale, subtitlePaint)
 
         // 1. 绘制黑猫主体与圆润臀尾一体实心剪影（背部→臀部→环绕粗尾单笔贯通，消除臀部凹陷与断层）
         val bodyAndTailPath = Path().apply {
@@ -180,12 +200,31 @@ class RestingCatEInkView @JvmOverloads constructor(
                     else -> cubicTo(sx(594f), sy(220f), sx(588f), sy(144f), sx(554f), sy(62f))
                 }
             }
+            strokeHaloWhitePaint.strokeWidth = 52f * scale
+            canvas.drawPath(highTailPath, strokeHaloWhitePaint)
+            strokeHaloWhitePaint.strokeWidth = 12f * scale
+            canvas.drawPath(bodyAndTailPath, strokeHaloWhitePaint)
+
             strokeBlackPaint.strokeWidth = 40f * scale
             canvas.drawPath(highTailPath, strokeBlackPaint)
+        } else {
+            strokeHaloWhitePaint.strokeWidth = 12f * scale
+            canvas.drawPath(bodyAndTailPath, strokeHaloWhitePaint)
         }
         canvas.drawPath(bodyAndTailPath, fillBlackPaint)
 
-        // 2. 前爪、后腿与圆润臀尾分界留白弧线
+        // 2. 双耳内侧、前爪、后腿与圆润臀尾透明镂空分界线
+        strokeWhitePaint.strokeWidth = 2.2f * scale
+        val earLines = Path().apply {
+            moveTo(sx(92f), sy(98f))
+            cubicTo(sx(98f), sy(74f), sx(103f), sy(52f), sx(107f), sy(43f))
+            cubicTo(sx(115f), sy(53f), sx(128f), sy(70f), sx(140f), sy(85f))
+            moveTo(sx(240f), sy(83f))
+            cubicTo(sx(253f), sy(67f), sx(267f), sy(49f), sx(275f), sy(39f))
+            cubicTo(sx(281f), sy(50f), sx(288f), sy(73f), sx(293f), sy(95f))
+        }
+        canvas.drawPath(earLines, strokeWhitePaint)
+
         strokeWhitePaint.strokeWidth = 6f * scale
         val whiteCreases = Path().apply {
             // 前爪分界弧线
