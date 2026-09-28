@@ -590,6 +590,18 @@ class PomodoroForegroundService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
+        val togglePausePending = PendingIntent.getService(
+            this, 11,
+            Intent(this, PomodoroForegroundService::class.java).apply { action = ACTION_TOGGLE_PAUSE },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val resetPending = PendingIntent.getService(
+            this, 12,
+            Intent(this, PomodoroForegroundService::class.java).apply { action = ACTION_RESET },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
         val exitPending = PendingIntent.getService(
             this, 14,
             Intent(this, PomodoroForegroundService::class.java).apply { action = ACTION_STOP_AND_EXIT },
@@ -597,23 +609,27 @@ class PomodoroForegroundService : Service() {
         )
 
         val m = (remainingSeconds + 59) / 60
-        val titleText = when {
-            currentRunState == RunState.STOPPED_ON_LOCK -> "已锁屏清零 · 开启屏幕自动重计"
-            currentPhase == Phase.WORK -> "工作中 · 剩余 ${m} 分钟"
-            else -> "休息中 · 剩余 ${m} 分钟"
+        val phaseLabel = if (currentPhase == Phase.WORK) "工作中" else "休息中"
+        val titleText = when (currentRunState) {
+            RunState.STOPPED_ON_LOCK -> "已锁屏清零 · 开启屏幕自动重计"
+            RunState.PAUSED -> "${phaseLabel}(已暂停) · 剩余 ${m} 分钟"
+            RunState.RUNNING -> "${phaseLabel} · 剩余 ${m} 分钟"
         }
+        val toggleActionLabel = if (currentRunState == RunState.RUNNING) "暂停" else "开始"
 
         return NotificationCompat.Builder(this, CHANNEL_ID_TIMER)
             .setSmallIcon(R.drawable.ic_pomodoro_eink)
             .setContentTitle(titleText)
-            .setContentText("锁屏自动清零 · 开启重新计时")
-            .setVisibility(NotificationCompat.VISIBILITY_SECRET)
+            .setContentText("下拉可直接【暂停/开始】或【重置】 · 锁屏自动清零")
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setSilent(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setContentIntent(openAppIntent)
-            .addAction(0, "退出程序", exitPending)
+            .addAction(0, toggleActionLabel, togglePausePending)
+            .addAction(0, "重置", resetPending)
+            .addAction(0, "退出", exitPending)
             .build()
     }
 
@@ -830,7 +846,7 @@ class PomodoroForegroundService : Service() {
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
                 setShowBadge(false)
-                lockscreenVisibility = Notification.VISIBILITY_SECRET
+                lockscreenVisibility = Notification.VISIBILITY_PUBLIC
             }
 
             val alertChannel = NotificationChannel(
